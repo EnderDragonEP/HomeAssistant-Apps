@@ -1,0 +1,30 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Remove all registered CIFS mounts from HA Supervisor on shutdown
+# ==============================================================================
+bashio::log.info "Deregistering drives from HA network storage..."
+
+if [[ ! -f /tmp/mountit_mounts.json ]]; then
+    bashio::log.info "No state file found, nothing to deregister"
+    exit 0
+fi
+
+while IFS= read -r label; do
+    [[ -z "$label" ]] && continue
+    name="${label}"
+    bashio::log.info "Removing HA mount: $name"
+    bashio::api.supervisor DELETE "/mounts/${name}" 2>/dev/null \
+        && bashio::log.info "Removed $name" \
+        || bashio::log.warning "Could not remove $name (may already be gone)"
+done < <(jq -r 'keys[]' /tmp/mountit_mounts.json 2>/dev/null)
+
+# Deregister folder mounts
+while IFS= read -r share_name; do
+    [[ -z "$share_name" ]] && continue
+    bashio::api.supervisor DELETE "/mounts/${share_name}" 2>/dev/null \
+        && bashio::log.info "Removed folder mount: $share_name" \
+        || bashio::log.warning "Could not remove $share_name (may already be gone)"
+done < <(jq -r 'keys[]' /tmp/mountit_folder_mounts.json 2>/dev/null)
+
+bashio::log.info "HA deregistration complete"

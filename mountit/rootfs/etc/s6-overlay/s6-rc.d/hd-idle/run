@@ -1,0 +1,13 @@
+#!/usr/bin/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Start hd-idle service
+# ==============================================================================
+if bashio::config.has_value 'hdd_idle_seconds' && ! bashio::config.equals 'hdd_idle_seconds' '0'; then
+    bashio::log.info "Enabling HDD idle spin-down after $(bashio::config 'hdd_idle_seconds')s"
+    bashio::log.warning "HDD idle is subject to host file-handle policy; actual spin-down may be delayed"
+    mkfifo /tmp/hdidle.events || true
+    exec hd-idle -i "$(bashio::config 'hdd_idle_seconds')" | tee /tmp/hdidle.events
+else
+    exec sleep infinity
+fi

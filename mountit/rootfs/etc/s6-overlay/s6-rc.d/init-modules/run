@@ -1,0 +1,14 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Load filesystem kernel modules
+# ==============================================================================
+bashio::log.blue "Loading filesystem modules"
+
+for mfs in ntfs3 exfat btrfs xfs; do
+    if modprobe "$mfs" 2>/dev/null; then
+        bashio::log.green "  $mfs"
+    else
+        bashio::log.warning "  $mfs — not available"
+    fi
+done

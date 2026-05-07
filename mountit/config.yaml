@@ -1,0 +1,53 @@
+---
+name: "Mount It"
+version: 1.0.0
+slug: mountit
+description: Automatically detect and mount USB/SATA drives as Home Assistant network storage
+url: https://github.com/your-repo/mountit
+arch:
+  - armv7
+  - aarch64
+  - amd64
+startup: initialize
+boot: auto
+init: false
+hassio_api: true
+hassio_role: admin
+homeassistant_api: true
+host_network: true
+udev: true
+kernel_modules: true
+privileged:
+  - SYS_ADMIN
+  - SYS_RAWIO
+  - SYS_RESOURCE
+  - SYS_MODULE
+full_access: true
+host_ipc: true
+apparmor: true
+devicetree: false
+advanced: true
+map:
+  - share:rw
+  - backup:rw
+  - media:rw
+options:
+  mount_unlabeled: false
+  automount_on_plugin: true
+  specific_label: ""
+  mount_location: media
+  hdd_idle_seconds: 0
+  folder_mounts: []
+schema:
+  mount_unlabeled: bool
+  automount_on_plugin: bool
+  specific_label: str?
+  mount_location: list(media|share|backup)
+  hdd_idle_seconds: int(0,)?
+  folder_mounts:
+    - drive: str
+      folder: str
+      location: list(media|share|backup)
+homeassistant: 2025.4.0
+backup: hot
+timeout: 60

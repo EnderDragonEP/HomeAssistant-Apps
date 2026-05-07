@@ -1,0 +1,17 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Safely unmount all drives that were mounted by this addon
+# ==============================================================================
+bashio::log.info "Unmounting drives..."
+
+if [[ -f /tmp/mountit_mounts.json ]]; then
+    while IFS= read -r mp; do
+        [[ -z "$mp" ]] && continue
+        bashio::log.info "Unmounting $mp"
+        umount -l "$mp" 2>/dev/null || true
+        rmdir "$mp" 2>/dev/null || true
+    done < <(jq -r '.[].mount_point' /tmp/mountit_mounts.json 2>/dev/null)
+fi
+
+bashio::log.info "Drives unmounted. Bye."

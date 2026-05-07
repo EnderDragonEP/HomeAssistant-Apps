@@ -1,0 +1,41 @@
+---
+configuration:
+  mount_unlabeled:
+    name: Mount Unlabeled Drives
+    description:  >- 
+      Also mount external drives that have no filesystem label (default: false)
+  automount_on_plugin:
+    name: Auto-mount on Plugin
+    description: >-
+      Automatically mount drives when they are plugged in (default: true)
+  specific_label:
+    name: Specific Label (Startup Only)
+    description: >-
+      If set, only mount this specific drive label at startup.
+      Hot-plug will still mount all drives.
+      Leave empty to mount all labeled drives (default: empty)
+  mount_location:
+    name: Mount Location
+    description: >-
+      Default HA storage location to expose drives: media, share, or backup (default: media)
+  hdd_idle_seconds:
+    name: HDD Idle Power-Down
+    description: >-
+      Spin down external hard drives after N seconds of inactivity. Set to 0 to disable (default: 0)
+  folder_mounts:
+    name: Folder Mounts (Advanced)
+    description: >-
+      Map specific folders within mounted drives to different HA storage locations. Drives must be mounted first.
+    fields:
+      drive:
+        name: Drive Label
+        description: >-
+          Label of an already-mounted drive
+      folder:
+        name: Folder Path
+        description: >-
+          Relative path within the drive
+      location:
+        name: HA Storage Location
+        description: >-
+          Where to expose this folder: media, share, or backup

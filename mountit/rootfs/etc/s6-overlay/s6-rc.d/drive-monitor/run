@@ -1,0 +1,155 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Monitor for hot-plug drive events and mount/unmount automatically
+# ==============================================================================
+
+if ! bashio::config.true 'automount_on_plugin'; then
+    bashio::log.info "Hot-plug disabled (automount_on_plugin=false)"
+    exec sleep infinity
+fi
+
+bashio::log.blue "Hot-plug monitor active"
+
+ipaddress=$(bashio::addon.ip_address)
+usage=$(bashio::config 'mount_location')
+username="_mountit_"
+password=$(cat /tmp/mountit_password 2>/dev/null || echo "")
+
+mount_and_register() {
+    local devname="$1"
+    local fstype label mdisk options="nosuid,relatime" type="auto" cmd="mount"
+
+    label=$(lsblk "$devname" -no LABEL 2>/dev/null | tr -d '[:space:]')
+    fstype=$(lsblk "$devname" -no FSTYPE 2>/dev/null | tr -d '[:space:]')
+
+    [[ -z "$fstype" ]] && return
+    [[ "$label" == hassos* ]] && return
+
+    if [[ -z "$label" ]]; then
+        if ! bashio::config.true 'mount_unlabeled'; then
+            bashio::log.info "Hot-plug: $devname has no label, skipping (mount_unlabeled=false)"
+            return
+        fi
+        label="unlabeled_$(basename "$devname")"
+        echo "$devname" > "/tmp/devmap_${label}"
+    fi
+
+    mdisk="${label// /_}"
+
+    if jq -e --arg k "$mdisk" '.[$k]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
+        return
+    fi
+
+    bashio::log.info "Hot-plug: $devname detected ($mdisk [$fstype])"
+
+    mkdir -p "/mnt/$mdisk"
+    chmod a+rwx "/mnt/$mdisk"
+
+    local m_args=()
+    case "$fstype" in
+        exfat|vfat|msdos) options="${options},umask=000" ;;
+        ntfs)              options="${options},umask=000"; type="ntfs3" ;;
+        apfs)              cmd="mount.apfs"; type=""; options="" ;;
+    esac
+    [[ -n "$type" ]]    && m_args+=("-t" "$type")
+    [[ -n "$options" ]] && m_args+=("-o" "$options")
+    m_args+=("$devname")
+
+    if ! $cmd "${m_args[@]}" "/mnt/$mdisk"; then
+        bashio::log.error "Hot-plug: failed to mount $mdisk"
+        rmdir "/mnt/$mdisk" 2>/dev/null || true
+        return
+    fi
+
+    jq --arg k "$mdisk" --arg dev "$devname" \
+       --arg mp "/mnt/$mdisk" --arg fs "${fstype:-unknown}" \
+       '. + {($k): {"device":$dev,"mount_point":$mp,"label":$k,"fstype":$fs}}' \
+       /tmp/mountit_mounts.json > /tmp/mountit_mounts.json.tmp \
+    && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
+
+    {
+        printf '[%s]\n' "$mdisk"
+        printf '   path = /mnt/%s\n' "$mdisk"
+        printf '   valid users = _mountit_\n'
+        printf '   read only = No\n'
+        printf '   guest ok = No\n'
+        printf '   force user = root\n'
+        printf '   create mask = 0777\n'
+        printf '   directory mask = 0777\n\n'
+    } >> /etc/samba/smb.conf
+    smbcontrol smbd reload-config 2>/dev/null || true
+
+    local cmd_json
+    cmd_json=$(jq -nrc \
+        --arg name "$mdisk" --arg share "$mdisk" \
+        --arg ip "${ipaddress/\/*/}" --arg user "$username" \
+        --arg pwd "$password" --arg usage "$usage" \
+        '{"name":$name,"type":"cifs","server":$ip,"share":$share,"username":$user,"password":$pwd,"usage":$usage}')
+
+    for rt in 1 2 3; do
+        bashio::api.supervisor POST /mounts "$cmd_json" && break
+        bashio::log.warning "Hot-plug: register retry $rt/3 for $mdisk"
+        sleep 3
+    done
+
+    bashio::log.green "Hot-plug: $mdisk mounted and registered"
+}
+
+unmount_and_deregister() {
+    local devname="$1"
+    local mdisk
+
+    mdisk=$(jq -r --arg dev "$devname" \
+        'to_entries[] | select(.value.device==$dev) | .key' \
+        /tmp/mountit_mounts.json 2>/dev/null | head -1)
+
+    [[ -z "$mdisk" ]] && return
+
+    bashio::log.info "Hot-plug: $devname removed ($mdisk)"
+
+    bashio::api.supervisor DELETE "/mounts/${mdisk}" 2>/dev/null \
+        || bashio::log.warning "Hot-plug: could not remove HA mount $mdisk"
+
+    umount -l "/mnt/$mdisk" 2>/dev/null || true
+    rmdir "/mnt/$mdisk" 2>/dev/null || true
+
+    python3 - "$mdisk" << 'PYEOF'
+import sys, re
+label = sys.argv[1]
+with open('/etc/samba/smb.conf', 'r') as f:
+    content = f.read()
+content = re.sub(rf'\[{re.escape(label)}\][^\[]*', '', content)
+with open('/etc/samba/smb.conf', 'w') as f:
+    f.write(content)
+PYEOF
+    smbcontrol smbd reload-config 2>/dev/null || true
+
+    jq --arg k "$mdisk" 'del(.[$k])' \
+        /tmp/mountit_mounts.json > /tmp/mountit_mounts.json.tmp \
+    && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
+
+    bashio::log.green "Hot-plug: $mdisk cleanly removed"
+}
+
+# ---- Event loop ----
+declare action="" devname="" devtype=""
+
+udevadm monitor --subsystem-match=block --property --udev 2>/dev/null | \
+while IFS='=' read -r key value; do
+    value="${value%$'\r'}"
+    case "$key" in
+        ACTION)  action="$value" ;;
+        DEVNAME) devname="$value" ;;
+        DEVTYPE) devtype="$value" ;;
+        "")
+            if [[ "$devtype" == "partition" ]]; then
+                case "$action" in
+                    add)    sleep 2; mount_and_register "$devname" ;;
+                    remove) unmount_and_deregister "$devname" ;;
+                esac
+            fi
+            action=""; devname=""; devtype=""
+            ;;
+    esac
+done
