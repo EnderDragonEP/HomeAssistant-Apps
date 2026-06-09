@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mountit-util"
-version = "1.0.0"
+version = "1.0.1"
 description = "Utility for Mount It Addon"
 authors = ["Mount It"]
 license = "MIT"
