@@ -56,7 +56,21 @@ mount_and_register() {
     [[ -n "$options" ]] && m_args+=("-o" "$options")
     m_args+=("$devname")
 
-    if ! $cmd "${m_args[@]}" "/mnt/$mdisk"; then
+    local mounted=false fix_out=""
+    if $cmd "${m_args[@]}" "/mnt/$mdisk"; then
+        mounted=true
+    elif [[ "$fstype" == "ntfs" ]]; then
+        # try clean up NTFS dirty state with ntfsfix
+        bashio::log.warning "Hot-plug: $mdisk [ntfs] mount failed, running ntfsfix..."
+        if fix_out=$(ntfsfix -d "$devname" 2>&1); then
+            bashio::log.info "Hot-plug: $mdisk ntfsfix: ${fix_out//$'\n'/; }"
+            $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
+        else
+            bashio::log.warning "Hot-plug: $mdisk ntfsfix failed: ${fix_out//$'\n'/; }"
+        fi
+    fi
+
+    if ! $mounted; then
         bashio::log.error "Hot-plug: failed to mount $mdisk"
         rmdir "/mnt/$mdisk" 2>/dev/null || true
         return

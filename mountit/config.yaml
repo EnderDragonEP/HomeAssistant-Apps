@@ -1,6 +1,6 @@
 ---
 name: "Mount It"
-version: 1.0.0
+version: 1.0.1
 slug: mountit
 description: Automatically detect and mount USB/SATA drives as Home Assistant network storage
 url: https://github.com/EnderDragonEP/HomeAssistant-Apps

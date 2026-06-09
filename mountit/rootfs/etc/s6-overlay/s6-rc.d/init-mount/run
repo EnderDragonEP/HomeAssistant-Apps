@@ -137,7 +137,21 @@ mount_drive() {
     [[ -n "$options" ]] && m_args+=("-o" "$options")
     m_args+=("$dev")
 
+    local mounted=false fix_out=""
     if $cmd "${m_args[@]}" "/mnt/$mdisk"; then
+        mounted=true
+    elif [[ "$fstype" == "ntfs" ]]; then
+        # try clean up NTFS dirty state with ntfsfix
+        bashio::log.warning "  $mdisk [ntfs] — mount failed, running ntfsfix..."
+        if fix_out=$(ntfsfix -d "$dev" 2>&1); then
+            bashio::log.info "  $mdisk — ntfsfix: ${fix_out//$'\n'/; }"
+            $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
+        else
+            bashio::log.warning "  $mdisk — ntfsfix failed: ${fix_out//$'\n'/; }"
+        fi
+    fi
+
+    if $mounted; then
         bashio::log.green "  $mdisk [$fstype] → /mnt/$mdisk"
         jq --arg k "$mdisk" --arg dev "$dev" \
            --arg mp "/mnt/$mdisk" --arg fs "${fstype:-unknown}" \
