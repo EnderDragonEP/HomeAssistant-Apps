@@ -20,7 +20,7 @@ The quickest way is to click the badge above. Otherwise, add the repository manu
 2. Open the **⋮** menu (top right) → **Repositories**.
 3. Paste the repository URL and click **Add**:
 
-   ```
+   ```url
    https://github.com/EnderDragonEP/HomeAssistant-Apps
    ```
 
