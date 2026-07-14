@@ -36,6 +36,7 @@ bashio::log.info "  automount_on_plugin: $(bashio::config 'automount_on_plugin')
 bashio::log.info "  specific_label:      ${specific_label:-(any)}"
 bashio::log.info "  mount_location:      $mount_location"
 bashio::log.info "  hdd_idle_seconds:    $(bashio::config 'hdd_idle_seconds')"
+bashio::log.info "  samba bind address:  ${addon_ip:-(all interfaces)}"
 
 folder_mount_count=$(jq '.folder_mounts | length' /data/options.json 2>/dev/null || echo "0")
 if [[ "$folder_mount_count" -gt 0 ]]; then
