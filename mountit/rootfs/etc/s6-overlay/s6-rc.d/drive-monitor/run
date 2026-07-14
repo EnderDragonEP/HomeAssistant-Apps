@@ -15,6 +15,7 @@ ipaddress=$(bashio::addon.ip_address)
 usage=$(bashio::config 'mount_location')
 username="_mountit_"
 password=$(cat /tmp/mountit_password 2>/dev/null || echo "")
+specific_label=$(bashio::config 'specific_label' 2>/dev/null || echo "")
 
 mount_and_register() {
     local devname="$1"
@@ -33,6 +34,11 @@ mount_and_register() {
         fi
         label="unlabeled_$(basename "$devname")"
         echo "$devname" > "/tmp/devmap_${label}"
+    fi
+
+    if [[ -n "$specific_label" && "$specific_label" != "null" && "$label" != "$specific_label" ]]; then
+        bashio::log.info "Hot-plug: $devname ('$label') does not match specific_label, skipping"
+        return
     fi
 
     # HA Supervisor mount names must match ^[A-Za-z0-9_]+$
@@ -65,6 +71,7 @@ mount_and_register() {
         bashio::log.warning "Hot-plug: $mdisk [ntfs] mount failed, running ntfsfix..."
         if fix_out=$(ntfsfix -d "$devname" 2>&1); then
             bashio::log.info "Hot-plug: $mdisk ntfsfix: ${fix_out//$'\n'/; }"
+            bashio::log.warning "Hot-plug: $mdisk — NTFS dirty flag cleared without a full repair; if the drive was not safely ejected, verify data with chkdsk on Windows"
             $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
         else
             bashio::log.warning "Hot-plug: $mdisk ntfsfix failed: ${fix_out//$'\n'/; }"

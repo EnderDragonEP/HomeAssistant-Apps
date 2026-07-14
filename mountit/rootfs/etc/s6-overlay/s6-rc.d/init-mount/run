@@ -26,6 +26,10 @@ PASSWORD=$(sed 's/[-]//g' /proc/sys/kernel/random/uuid | head -c 20)
 specific_label=$(bashio::config 'specific_label' 2>/dev/null || echo "")
 mount_location=$(bashio::config 'mount_location')
 
+addon_ip=$(bashio::addon.ip_address 2>/dev/null || echo "")
+addon_ip="${addon_ip/\/*/}"
+echo "$addon_ip" > /tmp/mountit_ip
+
 bashio::log.blue "Configuration"
 bashio::log.info "  mount_unlabeled:     $(bashio::config 'mount_unlabeled')"
 bashio::log.info "  automount_on_plugin: $(bashio::config 'automount_on_plugin')"
@@ -104,6 +108,11 @@ mount_drive() {
         dev=$(cat "/tmp/devmap_${disk}" 2>/dev/null)
     else
         dev=$(blkid -L "$disk" 2>/dev/null)
+        local dup_count
+        dup_count=$(blkid -o device -t LABEL="$disk" 2>/dev/null | wc -l)
+        if [[ "$dup_count" -gt 1 ]]; then
+            bashio::log.warning "  $mdisk — $dup_count partitions share label '$disk', only $dev will be mounted"
+        fi
     fi
 
     if [[ -z "$dev" ]]; then
@@ -149,6 +158,7 @@ mount_drive() {
         bashio::log.warning "  $mdisk [ntfs] — mount failed, running ntfsfix..."
         if fix_out=$(ntfsfix -d "$dev" 2>&1); then
             bashio::log.info "  $mdisk — ntfsfix: ${fix_out//$'\n'/; }"
+            bashio::log.warning "  $mdisk — NTFS dirty flag cleared without a full repair; if the drive was not safely ejected, verify data with chkdsk on Windows"
             $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
         else
             bashio::log.warning "  $mdisk — ntfsfix failed: ${fix_out//$'\n'/; }"
@@ -191,11 +201,16 @@ cat << 'GLOBAL_END'
    printing = bsd
    printcap name = /dev/null
    disable spoolss = Yes
-   bind interfaces only = No
    ea support = Yes
    vfs objects = catia streams_xattr
-
 GLOBAL_END
+
+if [[ -n "$addon_ip" && "$addon_ip" != "null" ]]; then
+    printf '   bind interfaces only = Yes\n'
+    printf '   interfaces = %s\n\n' "$addon_ip"
+else
+    printf '   bind interfaces only = No\n\n'
+fi
 
 while IFS= read -r label; do
     mp=$(jq -r --arg l "$label" '.[$l].mount_point' /tmp/mountit_mounts.json)

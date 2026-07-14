@@ -23,14 +23,9 @@ privileged:
   - SYS_RESOURCE
   - SYS_MODULE
 full_access: true
-host_ipc: true
 apparmor: true
 devicetree: false
 advanced: true
-map:
-  - share:rw
-  - backup:rw
-  - media:rw
 options:
   mount_unlabeled: false
   automount_on_plugin: true

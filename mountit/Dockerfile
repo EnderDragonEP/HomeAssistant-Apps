@@ -86,7 +86,8 @@ RUN find /etc/s6-overlay/s6-rc.d -name run -o -name finish -o -name up -o -name 
 # Install Python dependencies (diskinfo library)
 RUN cd /usr/local/bin/ && poetry install --no-interaction
 
-HEALTHCHECK CMD smbclient -L '\\localhost' -U '%' -m SMB3
+# smbd binds only the addon IP (written to /tmp/mountit_ip by init-mount);
+HEALTHCHECK CMD smbclient -L "//$(cat /tmp/mountit_ip 2>/dev/null || echo localhost)" -U '%' -m SMB3
 
 LABEL \
     io.hass.name="${BUILD_NAME}" \

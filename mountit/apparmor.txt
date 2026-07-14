@@ -7,19 +7,36 @@ profile addon_mountit flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/smbpass>
   #include <abstractions/bash>
 
-  capability,
   file,
   signal (send) set=(kill,term,int,hup,cont),
   mount,
   umount,
   remount,
 
+  # Samba file ownership/permission handling on mounted drives
+  capability chown,
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability fsetid,
+
+  # Service management (s6, smbpasswd/PAM)
+  capability kill,
   capability setgid,
   capability setuid,
-  capability sys_admin,
-  capability dac_read_search,
-  capability sys_rawio,
+  capability audit_write,
+
+  # smbd: bind port 445, raise fd limits
+  capability net_bind_service,
   capability sys_resource,
+  capability sys_nice,
+
+  # Drive handling: mount(2), modprobe, raw disk access (hdparm/hd-idle), udev
+  capability sys_admin,
+  capability sys_module,
+  capability sys_rawio,
+  capability net_admin,
+  capability mknod,
 
   # Networks
   network udp,
