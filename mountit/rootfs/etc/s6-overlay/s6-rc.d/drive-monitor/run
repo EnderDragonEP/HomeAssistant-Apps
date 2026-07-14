@@ -35,7 +35,8 @@ mount_and_register() {
         echo "$devname" > "/tmp/devmap_${label}"
     fi
 
-    mdisk="${label// /_}"
+    # HA Supervisor mount names must match ^[A-Za-z0-9_]+$
+    mdisk=$(printf '%s' "$label" | sed 's/[^A-Za-z0-9_]/_/g')
 
     if jq -e --arg k "$mdisk" '.[$k]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
         return

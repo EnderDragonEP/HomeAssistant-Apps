@@ -17,8 +17,7 @@ mkdir -p /mnt
 
 # ---- Samba service account ----
 PASSWORD=$(sed 's/[-]//g' /proc/sys/kernel/random/uuid | head -c 20)
-echo "$PASSWORD" > /tmp/mountit_password
-chmod 600 /tmp/mountit_password
+(umask 077; echo "$PASSWORD" > /tmp/mountit_password)
 (echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -a -s _mountit_ 2>/dev/null \
     || (echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -s _mountit_ 2>/dev/null \
     || bashio::log.warning "Could not set Samba password — HA registration may fail"
@@ -54,10 +53,13 @@ lsblk -o NAME,LABEL,FSTYPE,SIZE,TYPE 2>/dev/null | while IFS= read -r line; do
     bashio::log.info "  $line"
 done
 
-readarray -t labeled_drives < <(poetry -C /usr/local/bin/ run python /usr/local/bin/detect_drives.py 2>/dev/null)
+readarray -t labeled_drives < <(poetry -C /usr/local/bin/ run python /usr/local/bin/detect_drives.py 2>/tmp/detect_drives.err)
 
 if [[ ${#labeled_drives[@]} -eq 0 ]]; then
     bashio::log.info "  No labeled drives found"
+    if [[ -s /tmp/detect_drives.err ]]; then
+        bashio::log.warning "  detect_drives.py stderr: $(head -c 500 /tmp/detect_drives.err | tr '\n' ';')"
+    fi
 else
     bashio::log.info "  Labeled drives: ${labeled_drives[*]}"
 fi
@@ -94,7 +96,9 @@ fi
 mount_drive() {
     local disk="$1"
     local dev fstype options="nosuid,relatime" type="auto" cmd="mount"
-    local mdisk="${disk// /_}"
+    # HA Supervisor mount names must match ^[A-Za-z0-9_]+$
+    local mdisk
+    mdisk=$(printf '%s' "$disk" | sed 's/[^A-Za-z0-9_]/_/g')
 
     if [[ "$disk" == unlabeled_* ]]; then
         dev=$(cat "/tmp/devmap_${disk}" 2>/dev/null)
@@ -188,6 +192,8 @@ cat << 'GLOBAL_END'
    printcap name = /dev/null
    disable spoolss = Yes
    bind interfaces only = No
+   ea support = Yes
+   vfs objects = catia streams_xattr
 
 GLOBAL_END
 
@@ -219,13 +225,16 @@ if [[ "$folder_mount_count" -gt 0 ]]; then
         folder=$(jq -r ".folder_mounts[$i].folder"  /data/options.json)
         location=$(jq -r ".folder_mounts[$i].location" /data/options.json)
 
+        # Mount keys are sanitized to ^[A-Za-z0-9_]+$; accept the raw label too
+        drive_key=$(printf '%s' "$drive" | sed 's/[^A-Za-z0-9_]/_/g')
+
         # Drive must be mounted
-        if ! jq -e --arg d "$drive" '.[$d]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
+        if ! jq -e --arg d "$drive_key" '.[$d]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
             bashio::log.error "  $drive/$folder — drive '$drive' is not mounted, skipping"
             continue
         fi
 
-        drive_mp=$(jq -r --arg d "$drive" '.[$d].mount_point' /tmp/mountit_mounts.json)
+        drive_mp=$(jq -r --arg d "$drive_key" '.[$d].mount_point' /tmp/mountit_mounts.json)
         full_path="${drive_mp}/${folder}"
 
         # Folder must exist
@@ -236,7 +245,7 @@ if [[ "$folder_mount_count" -gt 0 ]]; then
 
         # Auto-generate Samba share name: drive_sanitized_folder
         folder_clean=$(echo "$folder" | sed 's|[^a-zA-Z0-9]|_|g; s|_\+|_|g; s|^_||; s|_$||')
-        share_name="${drive}_${folder_clean}"
+        share_name="${drive_key}_${folder_clean}"
 
         # Reserved name check
         for rn in $reserved_names; do

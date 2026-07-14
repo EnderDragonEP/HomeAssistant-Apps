@@ -21,7 +21,7 @@ it (if `automount_on_plugin` is enabled).
 | `automount_on_plugin` | `true` | Automatically mount drives when plugged in |
 | `specific_label` | `""` | If set, only mount this label at startup (hot-plug still mounts all) |
 | `mount_location` | `media` | Where to expose drives: `media`, `share`, or `backup` |
-| `hdd_idle_seconds` | `0` | Spin down drives after N seconds idle (0 = disabled) |
+| `hdd_idle_seconds` | `0` | Spin down drives after N seconds idle (0 = disabled). The HAOS system disk is always excluded. |
 
 ## Folder Mounts (Advanced)
 
