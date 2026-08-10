@@ -22,6 +22,19 @@ configuration:
     name: HDD Idle Power-Down
     description: >-
       Spin down external hard drives after N seconds of inactivity. Set to 0 to disable (default: 0)
+  file_activity_log:
+    name: File Activity Log
+    description: >-
+      Write every file operation on the shared drives (opens, writes, deletes,
+      renames, new folders) to the addon log. Shows activity coming from Home
+      Assistant, since it is the client that mounts these shares (default: false)
+  file_activity_detail:
+    name: File Activity Detail
+    description: >-
+      How much to record when File Activity Log is on. "basic" logs connections,
+      file opens/creates, deletes, renames and new folders. "detailed" adds file
+      closes, truncations, permission/attribute changes and every individual read
+      and write — very verbose, use only for troubleshooting (default: basic)
   folder_mounts:
     name: Folder Mounts (Advanced)
     description: >-

@@ -38,6 +38,34 @@ bashio::log.info "  mount_location:      $mount_location"
 bashio::log.info "  hdd_idle_seconds:    $(bashio::config 'hdd_idle_seconds')"
 bashio::log.info "  samba bind address:  ${addon_ip:-(all interfaces)}"
 
+# ---- File activity auditing (Samba full_audit VFS module) ----
+# An operation name full_audit does not recognise makes it refuse every share
+# connection, and the *at names below only exist on Samba 4.14+ (which replaced
+# open/rename/unlink/mkdir/rmdir), so verify the version before enabling.
+audit_ops=""
+if bashio::config.true 'file_activity_log'; then
+    samba_version=$(smbd --version 2>/dev/null | sed -n 's/^Version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+    samba_major="${samba_version%%.*}"
+    samba_minor="${samba_version#*.}"
+    audit_detail=$(bashio::config 'file_activity_detail')
+
+    if [[ -z "$samba_version" ]] || (( samba_major < 4 || (samba_major == 4 && samba_minor < 14) )); then
+        bashio::log.warning "  file_activity_log:   off — needs Samba 4.14+ (found ${samba_version:-unknown})"
+    else
+        case "$audit_detail" in
+            detailed)
+                audit_ops="connect disconnect create_file close renameat unlinkat mkdirat"
+                audit_ops="$audit_ops ftruncate fchmod fchown fsetxattr fset_nt_acl pread pwrite" ;;
+            *)
+                audit_detail="basic"
+                audit_ops="connect disconnect create_file renameat unlinkat mkdirat" ;;
+        esac
+        bashio::log.info "  file_activity_log:   on ($audit_detail)"
+    fi
+else
+    bashio::log.info "  file_activity_log:   off"
+fi
+
 folder_mount_count=$(jq '.folder_mounts | length' /data/options.json 2>/dev/null || echo "0")
 if [[ "$folder_mount_count" -gt 0 ]]; then
     bashio::log.info "  folder_mounts:"
@@ -197,14 +225,31 @@ cat << 'GLOBAL_END'
    server string = Mount It
    security = user
    map to guest = Never
-   log level = 0
    load printers = No
    printing = bsd
    printcap name = /dev/null
    disable spoolss = Yes
    ea support = Yes
-   vfs objects = catia streams_xattr
 GLOBAL_END
+
+# full_audit goes last in the chain so it reports the real on-disk path, and so
+# NTFS alternate data streams already folded into xattrs by streams_xattr do not
+# show up as separate file activity. syslog = No sends the audit trail to smbd's
+# own debug output, which the addon log shows (smbd runs with --debug-stdout).
+if [[ -n "$audit_ops" ]]; then
+    printf '   vfs objects = catia streams_xattr full_audit\n'
+    printf '   log level = 0 full_audit:1\n'
+    printf '   full_audit:prefix = %%I|%%S\n'
+    printf '   full_audit:success = %s\n' "$audit_ops"
+    printf '   full_audit:failure = %s\n' "$audit_ops"
+    printf '   full_audit:syslog = No\n'
+    printf '   full_audit:log_secdesc = No\n'
+    printf '   debug prefix timestamp = Yes\n'
+    printf '   max log size = 0\n'
+else
+    printf '   vfs objects = catia streams_xattr\n'
+    printf '   log level = 0\n'
+fi
 
 if [[ -n "$addon_ip" && "$addon_ip" != "null" ]]; then
     printf '   bind interfaces only = Yes\n'

@@ -17,6 +17,7 @@ Home Assistant network storage via the Supervisor Mounts API.
 - Configurable storage location (`media`, `share`, or `backup`)
 - Advanced folder mapping: expose subfolders to different HA locations
 - HDD idle power-down support
+- Optional file activity log: see opens, writes, deletes and renames in the addon log
 - Clean shutdown: deregisters mounts and unmounts drives
 
 ## Supported filesystems
