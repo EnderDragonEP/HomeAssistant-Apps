@@ -239,12 +239,11 @@ GLOBAL_END
 if [[ -n "$audit_ops" ]]; then
     printf '   vfs objects = catia streams_xattr full_audit\n'
     printf '   log level = 0 full_audit:1\n'
-    printf '   full_audit:prefix = %%I|%%S\n'
+    printf '   full_audit:prefix = %%T|%%I|%%S\n'
     printf '   full_audit:success = %s\n' "$audit_ops"
     printf '   full_audit:failure = %s\n' "$audit_ops"
     printf '   full_audit:syslog = No\n'
     printf '   full_audit:log_secdesc = No\n'
-    printf '   debug prefix timestamp = Yes\n'
     printf '   max log size = 0\n'
 else
     printf '   vfs objects = catia streams_xattr\n'
