@@ -1,6 +1,6 @@
 # Mount It — Home Assistant Addon
 
-![Mount It](https://github.com/EnderDragonEP/HomeAssistant-Apps/raw/main/mountit/logo.png)
+![Mount It](/.asset/mountit/banner.png)
 
 Automatically detects and mounts external USB/SATA drives, then exposes them as Home Assistant network storage via the Supervisor Mounts API.
 
