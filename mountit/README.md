@@ -18,7 +18,7 @@ Icon & banner is made in [draw.io](https://github.com/jgraph/drawio)
 - Configurable storage location (`media`, `share`, or `backup`)
 - Advanced folder mapping: expose subfolders to different HA locations
 - HDD idle power-down support
-- Optional file activity log: see opens, writes, deletes and renames in the addon log
+- Configurable file activity logging for troubleshooting
 - Clean shutdown: deregisters mounts and unmounts drives
 
 ## Supported filesystems

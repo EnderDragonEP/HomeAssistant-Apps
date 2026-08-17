@@ -39,41 +39,65 @@ bashio::log.info "  hdd_idle_seconds:    $(bashio::config 'hdd_idle_seconds')"
 bashio::log.info "  samba bind address:  ${addon_ip:-(all interfaces)}"
 
 # ---- File activity auditing (Samba full_audit VFS module) ----
+# Migrate the previous toggle/detail pair without unexpectedly enabling logging
+# for users whose File Activity Log toggle was off.
+audit_detail=$(bashio::config 'file_activity_detail' 2>/dev/null || echo "off")
+if ! addon_options=$(bashio::addon.options 2>/dev/null); then
+    audit_detail="off"
+    bashio::log.warning "  file_activity_detail: off — could not inspect legacy settings"
+elif bashio::jq.exists "$addon_options" ".file_activity_log"; then
+    legacy_file_activity_log=$(jq -r '.file_activity_log' <<< "$addon_options")
+    if [[ "$legacy_file_activity_log" == "true" ]]; then
+        [[ "$audit_detail" == "basic" || "$audit_detail" == "detailed" ]] \
+            || audit_detail="basic"
+    else
+        audit_detail="off"
+    fi
+
+    migrated_options=$(jq -c --arg detail "$audit_detail" \
+        'del(.file_activity_log) | .file_activity_detail = $detail' \
+        <<< "$addon_options")
+    bashio::addon.options 'self' "$migrated_options" > /dev/null \
+        && bashio::log.info "  Migrated legacy file activity settings" \
+        || bashio::log.warning "Could not migrate legacy file activity settings"
+fi
+
 # An operation name full_audit does not recognise makes it refuse every share
 # connection, and the *at names below only exist on Samba 4.14+ (which replaced
 # open/rename/unlink/mkdir/rmdir), so verify the version before enabling.
 audit_ops=""
-if bashio::config.true 'file_activity_log'; then
-    samba_version=$(smbd --version 2>/dev/null | sed -n 's/^Version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
-    samba_major="${samba_version%%.*}"
-    samba_minor="${samba_version#*.}"
-    audit_detail=$(bashio::config 'file_activity_detail')
+case "$audit_detail" in
+    off)
+        bashio::log.info "  file_activity_detail: off" ;;
+    basic|detailed)
+        samba_version=$(smbd --version 2>/dev/null | sed -n 's/^Version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+        samba_major="${samba_version%%.*}"
+        samba_minor="${samba_version#*.}"
 
-    if [[ -z "$samba_version" ]] || (( samba_major < 4 || (samba_major == 4 && samba_minor < 14) )); then
-        bashio::log.warning "  file_activity_log:   off — needs Samba 4.14+ (found ${samba_version:-unknown})"
-    else
-        case "$audit_detail" in
-            detailed)
-                audit_ops="connect disconnect create_file close renameat unlinkat mkdirat"
-                audit_ops="$audit_ops ftruncate fchmod fchown fsetxattr fset_nt_acl pread pwrite" ;;
-            *)
-                audit_detail="basic"
-                audit_ops="connect disconnect create_file renameat unlinkat mkdirat" ;;
-        esac
-        bashio::log.info "  file_activity_log:   on ($audit_detail)"
-    fi
-else
-    bashio::log.info "  file_activity_log:   off"
-fi
+        if [[ -z "$samba_version" ]] || (( samba_major < 4 || (samba_major == 4 && samba_minor < 14) )); then
+            bashio::log.warning "  file_activity_detail: off — '$audit_detail' needs Samba 4.14+ (found ${samba_version:-unknown})"
+        elif [[ "$audit_detail" == "detailed" ]]; then
+            audit_ops="connect disconnect create_file close renameat unlinkat mkdirat"
+            audit_ops="$audit_ops ftruncate fchmod fchown fsetxattr fset_nt_acl pread pwrite"
+            bashio::log.info "  file_activity_detail: detailed"
+        else
+            audit_ops="connect disconnect create_file renameat unlinkat mkdirat"
+            bashio::log.info "  file_activity_detail: basic"
+        fi ;;
+    *)
+        audit_detail="off"
+        bashio::log.warning "  file_activity_detail: off — invalid configured value" ;;
+esac
 
 folder_mount_count=$(jq '.folder_mounts | length' /data/options.json 2>/dev/null || echo "0")
 if [[ "$folder_mount_count" -gt 0 ]]; then
     bashio::log.info "  folder_mounts:"
     for i in $(seq 0 $((folder_mount_count - 1))); do
+        name=$(jq -r ".folder_mounts[$i].name // empty" /data/options.json)
         drive=$(jq -r ".folder_mounts[$i].drive"    /data/options.json)
         folder=$(jq -r ".folder_mounts[$i].folder"  /data/options.json)
         location=$(jq -r ".folder_mounts[$i].location" /data/options.json)
-        bashio::log.info "    [$i] $drive/$folder → $location"
+        bashio::log.info "    [$i] $drive/$folder → $location (name: ${name:-(automatic)})"
     done
 else
     bashio::log.info "  folder_mounts:       (none)"
@@ -281,6 +305,7 @@ if [[ "$folder_mount_count" -gt 0 ]]; then
     reserved_names="media share backup config addons ssl homeassistant"
 
     for i in $(seq 0 $((folder_mount_count - 1))); do
+        configured_name=$(jq -r ".folder_mounts[$i].name // empty" /data/options.json)
         drive=$(jq -r ".folder_mounts[$i].drive"    /data/options.json)
         folder=$(jq -r ".folder_mounts[$i].folder"  /data/options.json)
         location=$(jq -r ".folder_mounts[$i].location" /data/options.json)
@@ -306,24 +331,43 @@ if [[ "$folder_mount_count" -gt 0 ]]; then
         # Auto-generate Samba share name: drive_sanitized_folder
         folder_clean=$(echo "$folder" | sed 's|[^a-zA-Z0-9]|_|g; s|_\+|_|g; s|^_||; s|_$||')
         share_name="${drive_key}_${folder_clean}"
+        mount_name="${configured_name:-$share_name}"
+
+        # HA Supervisor mount names may contain only letters, numbers, and underscores
+        if [[ ! "$mount_name" =~ ^[A-Za-z0-9_]+$ ]]; then
+            bashio::log.error "  $drive/$folder — network storage name '$mount_name' is invalid, skipping"
+            continue
+        fi
 
         # Reserved name check
         for rn in $reserved_names; do
-            if [[ "${share_name,,}" == "${rn,,}" ]]; then
-                bashio::log.error "  $drive/$folder — share name '$share_name' is reserved, skipping"
+            if [[ "${mount_name,,}" == "${rn,,}" ]]; then
+                bashio::log.error "  $drive/$folder — network storage name '$mount_name' is reserved, skipping"
                 continue 2
             fi
         done
 
-        # Conflict with existing drive mount
+        # The Samba share must not conflict with an existing drive share
         if jq -e --arg n "$share_name" '.[$n]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
-            bashio::log.error "  $drive/$folder — '$share_name' conflicts with a drive mount, skipping"
+            bashio::log.error "  $drive/$folder — Samba share '$share_name' conflicts with a drive mount, skipping"
             continue
         fi
 
-        # Conflict with another folder mount
-        if jq -e --arg n "$share_name" '.[$n]' /tmp/mountit_folder_mounts.json > /dev/null 2>&1; then
-            bashio::log.error "  $drive/$folder — '$share_name' conflicts with another folder mount, skipping"
+        # The HA mount name must not conflict with an existing drive mount
+        if jq -e --arg n "$mount_name" '.[$n]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
+            bashio::log.error "  $drive/$folder — network storage name '$mount_name' conflicts with a drive mount, skipping"
+            continue
+        fi
+
+        # The HA mount name must be unique across folder mounts
+        if jq -e --arg n "$mount_name" '.[$n]' /tmp/mountit_folder_mounts.json > /dev/null 2>&1; then
+            bashio::log.error "  $drive/$folder — network storage name '$mount_name' conflicts with another folder mount, skipping"
+            continue
+        fi
+
+        # The generated Samba share must also be unique across folder mounts
+        if jq -e --arg n "$share_name" '.[] | select(.share == $n)' /tmp/mountit_folder_mounts.json > /dev/null 2>&1; then
+            bashio::log.error "  $drive/$folder — Samba share '$share_name' conflicts with another folder mount, skipping"
             continue
         fi
 
@@ -340,13 +384,14 @@ if [[ "$folder_mount_count" -gt 0 ]]; then
         } >> /etc/samba/smb.conf
 
         # Track in state
-        jq --arg k "$share_name" --arg drive "$drive" --arg folder "$folder" \
+        jq --arg k "$mount_name" --arg share "$share_name" \
+           --arg drive "$drive" --arg folder "$folder" \
            --arg path "$full_path" --arg loc "$location" \
-           '. + {($k): {"drive":$drive,"folder":$folder,"path":$path,"location":$loc}}' \
+           '. + {($k): {"share":$share,"drive":$drive,"folder":$folder,"path":$path,"location":$loc}}' \
            /tmp/mountit_folder_mounts.json > /tmp/mountit_folder_mounts.json.tmp \
         && mv /tmp/mountit_folder_mounts.json.tmp /tmp/mountit_folder_mounts.json
 
-        bashio::log.green "  $drive/$folder → [$share_name] ($location)"
+        bashio::log.green "  $drive/$folder → $mount_name [$share_name] ($location)"
     done
 fi
 

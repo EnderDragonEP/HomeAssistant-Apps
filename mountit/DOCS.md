@@ -22,13 +22,13 @@ it (if `automount_on_plugin` is enabled).
 | `specific_label` | `""` | If set, only this drive label is mounted (applies to startup and hot-plug) |
 | `mount_location` | `media` | Where to expose drives: `media`, `share`, or `backup` |
 | `hdd_idle_seconds` | `0` | Spin down drives after N seconds idle (0 = disabled). The HAOS system disk is always excluded. |
-| `file_activity_log` | `false` | Log every file operation on the shares to the addon log |
-| `file_activity_detail` | `basic` | How much to record: `basic` or `detailed` |
+| `file_activity_detail` | `off` | File activity logging level: `off`, `basic`, or `detailed` |
 
 ## File Activity Log
 
-Enable `file_activity_log` to see what is happening to the files on your drives.
-Each operation is written to the addon log (**Settings → Add-ons → Mount It → Log**) as a single line:
+Set `file_activity_detail` to `basic` or `detailed` to record file operations in
+the addon log (**Settings → Add-ons → Mount It → Log**). Each operation is
+written as a single line:
 
 ```txt
 2026/08/10 21:04:11|172.30.32.1|DriveHDD|create_file|ok|0x80000000|file|open|/mnt/DriveHDD/Movies/clip.mkv
@@ -37,19 +37,20 @@ Each operation is written to the addon log (**Settings → Add-ons → Mount It 
 ```
 
 The fields are `timestamp | client IP | share | operation | ok/fail | details`.
-Both successful and failed operations are recorded, so this also shows permission problems.
+Both successful and failed operations are recorded.
 
 | Detail | Records |
 | --- | --- |
-| `basic` | Share connects/disconnects, file opens and creations, deletes, renames, new folders |
+| `off` | File activity logging is disabled |
+| `basic` | Share connects/disconnects, file opens and creations, deletes, renames, and new folders |
 | `detailed` | Everything in `basic`, plus closes, truncations, permission/attribute/ACL changes, and every individual read and write |
 
 ### Notes
 
-- The shares are mounted by Home Assistant itself, so the client IP is your HA host and the activity you see is what HA and its addons do with the drives (media browser, backups, file uploads, and so on). Other devices cannot show up here — the shares only accept the addon's internal account, whose password is generated at startup.
-- `detailed` writes a line for every read and write call — copying a large file can produce thousands of lines. Use it for troubleshooting, not day to day. Logging happens inside the addon and adds work per file operation, so leaving `detailed` on can slow transfers.
+- The shares are mounted by Home Assistant itself, so the client IP is your HA host.
+- `detailed` can produce thousands of lines while copying a large file and may slow transfers.
 - The log is not persisted by the addon; it lives in the addon's container log.
-- Requires Samba 4.14 or newer. If an older version is detected the feature is skipped and a warning is written to the log at startup.
+- Samba 4.14 or newer is required. On older versions, activity logging stays off.
 
 ## Folder Mounts (Advanced)
 
@@ -60,7 +61,8 @@ This is useful when, for example, you store both media files and HA backups on t
 
 ```yaml
 folder_mounts:
-  - drive: DriveHDD
+  - name: CameraMedia
+    drive: DriveHDD
     folder: ha_backup
     location: backup
 ```
@@ -70,7 +72,8 @@ Each folder mount:
 - Requires the parent drive to be mounted first
 - The folder path must already exist on the drive
 - Is registered in HA as a separate network storage entry
-- Appears in HA as `<DriveLabel>_<FolderPath>` (e.g., `DriveHDD_ha_backup`)
+- Can use an optional `name` containing letters, numbers, and underscores
+- Appears in HA using `name`, or `<DriveLabel>_<FolderPath>` when `name` is omitted
 
 ## Supported filesystems
 
