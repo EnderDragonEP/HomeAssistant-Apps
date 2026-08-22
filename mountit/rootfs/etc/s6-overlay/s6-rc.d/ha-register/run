@@ -1,95 +1,33 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# Register mounted drives with the HA Supervisor as CIFS network storage
+# Prepare Home Assistant Supervisor network-storage reconciliation
 # ==============================================================================
 
-if [[ ! -f /tmp/mountit_mounts.json ]] || [[ "$(jq 'length' /tmp/mountit_mounts.json)" -eq 0 ]]; then
-    bashio::log.info "No drives to register"
+source /usr/local/lib/mountit-supervisor.sh
+
+if ! mountit::init_supervisor_context; then
+    bashio::log.error "HA registration is unavailable; background recovery will retry"
     exit 0
 fi
 
-ipaddress=$(bashio::addon.ip_address)
-usage=$(bashio::config 'mount_location')
-username="_mountit_"
-password=$(cat /tmp/mountit_password)
+drive_count=$(jq 'length' "$MOUNTIT_MOUNTS_FILE" 2>/dev/null || echo 0)
+folder_count=$(jq 'length' "$MOUNTIT_FOLDER_MOUNTS_FILE" 2>/dev/null || echo 0)
+desired_count=$((drive_count + folder_count))
 
-bashio::log.blue "Registering with HA  (usage=$usage, server=${ipaddress/\/*/})"
-bashio::log.info "Waiting for Samba on port 445..."
-bashio::net.wait_for 445 "${ipaddress/\/*/}" 60
-
-while IFS= read -r label; do
-    existing=$(bashio::api.supervisor GET /mounts 2>/dev/null \
-        | jq -r --arg n "$label" '.mounts[]? | select(.name==$n) | .name' 2>/dev/null || echo "")
-    if [[ -n "$existing" ]]; then
-        bashio::log.info "  $label — removing stale entry"
-        bashio::api.supervisor DELETE "/mounts/${label}" 2>/dev/null || true
-        sleep 1
+if ((desired_count > 0)); then
+    bashio::log.blue "Reconciling HA network storage  (server=$MOUNTIT_SERVER)"
+    bashio::log.info "Waiting for Samba on port 445..."
+    if ! bashio::net.wait_for 445 "$MOUNTIT_SERVER" 60; then
+        bashio::log.error "Samba did not become ready; background recovery will retry"
+        exit 0
     fi
-
-    cmd=$(jq -nrc \
-        --arg name "$label" \
-        --arg share "$label" \
-        --arg ip "${ipaddress/\/*/}" \
-        --arg user "$username" \
-        --arg pwd "$password" \
-        --arg usage "$usage" \
-        '{"name":$name,"type":"cifs","server":$ip,"share":$share,"username":$user,"password":$pwd,"usage":$usage}')
-
-    success=false
-    for rt in 1 2 3; do
-        if bashio::api.supervisor POST /mounts "$cmd"; then
-            bashio::log.green "  $label → $usage"
-            success=true
-            break
-        fi
-        bashio::log.warning "  $label — attempt $rt/3 failed, retrying..."
-        sleep 3
-    done
-    $success || bashio::log.error "  $label — failed to register after 3 attempts"
-
-done < <(jq -r 'keys[]' /tmp/mountit_mounts.json 2>/dev/null)
-
-# ---- Register folder mounts ----
-if [[ -f /tmp/mountit_folder_mounts.json ]] && [[ "$(jq 'length' /tmp/mountit_folder_mounts.json)" -gt 0 ]]; then
-    bashio::log.blue "Registering folder mounts"
-
-    while IFS= read -r mount_name; do
-        location=$(jq -r --arg n "$mount_name" '.[$n].location' /tmp/mountit_folder_mounts.json)
-        drive=$(jq -r --arg n "$mount_name" '.[$n].drive'       /tmp/mountit_folder_mounts.json)
-        folder=$(jq -r --arg n "$mount_name" '.[$n].folder'     /tmp/mountit_folder_mounts.json)
-        share_name=$(jq -r --arg n "$mount_name" '.[$n].share // $n' /tmp/mountit_folder_mounts.json)
-
-        existing=$(bashio::api.supervisor GET /mounts 2>/dev/null \
-            | jq -c --arg n "$mount_name" '.mounts[]? | select(.name==$n)' 2>/dev/null \
-            | head -1 || echo "")
-        if [[ -n "$existing" ]]; then
-            existing_share=$(jq -r '.share // empty' <<< "$existing")
-            if [[ "$existing_share" != "$share_name" ]]; then
-                bashio::log.error "  $mount_name — name is already used by another network storage entry, skipping"
-                continue
-            fi
-            bashio::api.supervisor DELETE "/mounts/${mount_name}" 2>/dev/null || true
-            sleep 1
-        fi
-
-        cmd=$(jq -nrc \
-            --arg name "$mount_name" --arg share "$share_name" \
-            --arg ip "${ipaddress/\/*/}" --arg user "$username" \
-            --arg pwd "$password" --arg usage "$location" \
-            '{"name":$name,"type":"cifs","server":$ip,"share":$share,"username":$user,"password":$pwd,"usage":$usage}')
-
-        success=false
-        for rt in 1 2 3; do
-            if bashio::api.supervisor POST /mounts "$cmd"; then
-                bashio::log.green "  $drive/$folder → $mount_name ($location)"
-                success=true
-                break
-            fi
-            bashio::log.warning "  $mount_name — attempt $rt/3 failed, retrying..."
-            sleep 3
-        done
-        $success || bashio::log.error "  $mount_name — failed to register after 3 attempts"
-
-    done < <(jq -r 'keys[]' /tmp/mountit_folder_mounts.json 2>/dev/null)
+else
+    bashio::log.info "No mounted drives to register"
 fi
+
+# Keep this s6 oneshot free of long Supervisor mutations so shutdown can never
+# wait on an in-progress oneshot. The dependent, signal-aware ha-reconcile
+# longrun performs its first pass immediately.
+bashio::log.info "Samba is ready; starting HA storage reconciliation"
+exit 0

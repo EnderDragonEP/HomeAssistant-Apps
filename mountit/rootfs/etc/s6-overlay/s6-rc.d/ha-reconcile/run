@@ -1,0 +1,66 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Periodically repair transient Supervisor/systemd mount registration failures
+# ==============================================================================
+
+source /usr/local/lib/mountit-supervisor.sh
+
+interval="${MOUNTIT_RECONCILE_INTERVAL:-60}"
+MOUNTIT_RETRY_DELAYS="${MOUNTIT_BACKGROUND_RETRY_DELAYS:-0 3}"
+MOUNTIT_VERIFY_DELAYS="${MOUNTIT_BACKGROUND_VERIFY_DELAYS:-0 1}"
+MOUNTIT_API_READ_MAX_TIME="${MOUNTIT_BACKGROUND_READ_MAX_TIME:-15}"
+MOUNTIT_API_CREATE_MAX_TIME="${MOUNTIT_BACKGROUND_CREATE_MAX_TIME:-60}"
+MOUNTIT_API_MUTATION_MAX_TIME="${MOUNTIT_BACKGROUND_MUTATION_MAX_TIME:-60}"
+MOUNTIT_API_DELETE_MAX_TIME="${MOUNTIT_BACKGROUND_DELETE_MAX_TIME:-60}"
+sleep_pid=""
+first_pass=true
+
+stop_reconciler() {
+    mountit::cancel_api
+    [[ -z "$sleep_pid" ]] || kill "$sleep_pid" 2>/dev/null || true
+    mountit::unlock
+    exit 0
+}
+trap stop_reconciler TERM INT
+bashio::log.info "HA storage recovery monitor active (interval=${interval}s)"
+
+while true; do
+    if ! mountit::init_supervisor_context; then
+        bashio::log.warning "HA storage recovery is waiting for registration context"
+    elif mountit::lock 0; then
+        if ! smbcontrol smbd reload-config 2>/dev/null; then
+            bashio::log.warning "HA storage recovery is waiting for Samba configuration reload"
+        else
+            if $first_pass; then
+                if mountit::reconcile_all false; then
+                    reconcile_status=0
+                else
+                    reconcile_status=$?
+                fi
+            else
+                if mountit::reconcile_all true; then
+                    reconcile_status=0
+                else
+                    reconcile_status=$?
+                fi
+            fi
+
+            if ((reconcile_status == 0)); then
+                if $first_pass; then
+                    bashio::log.green "HA network storage ready — $MOUNTIT_RECONCILE_TOTAL mount(s) active"
+                fi
+            else
+                active_count=$((MOUNTIT_RECONCILE_TOTAL - MOUNTIT_RECONCILE_FAILURES))
+                bashio::log.warning "HA storage recovery pending — $active_count/$MOUNTIT_RECONCILE_TOTAL mount(s) active"
+            fi
+            first_pass=false
+        fi
+        mountit::unlock
+    fi
+
+    sleep "$interval" &
+    sleep_pid=$!
+    wait "$sleep_pid" || exit 0
+    sleep_pid=""
+done

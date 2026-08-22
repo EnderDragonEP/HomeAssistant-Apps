@@ -14,6 +14,7 @@ Icon & banner is made in [draw.io](https://github.com/jgraph/drawio)
 
 - Auto-detects labeled drives on startup and hot-plug
 - Exposes drives as network storage in **Settings → Storage**
+- Automatically repairs transient Home Assistant storage registration failures
 - Optional support for unlabeled drives
 - Configurable storage location (`media`, `share`, or `backup`)
 - Advanced folder mapping: expose subfolders to different HA locations

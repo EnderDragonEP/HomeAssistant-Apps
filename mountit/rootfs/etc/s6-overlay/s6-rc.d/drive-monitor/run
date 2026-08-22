@@ -1,8 +1,19 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# Monitor for hot-plug drive events and mount/unmount automatically
+# Monitor hot-plug events and keep local, Samba, and HA mount state in sync
 # ==============================================================================
+
+source /usr/local/lib/mountit-folders.sh
+source /usr/local/lib/mountit-supervisor.sh
+
+# Keep hot-plug API work interruptible within the addon shutdown budget. Any
+# operation that outlives the client is protected by the persistent intent
+# marker and completed by background reconciliation.
+MOUNTIT_API_READ_MAX_TIME="${MOUNTIT_HOTPLUG_READ_MAX_TIME:-15}"
+MOUNTIT_API_CREATE_MAX_TIME="${MOUNTIT_HOTPLUG_CREATE_MAX_TIME:-60}"
+MOUNTIT_API_MUTATION_MAX_TIME="${MOUNTIT_HOTPLUG_MUTATION_MAX_TIME:-60}"
+MOUNTIT_API_DELETE_MAX_TIME="${MOUNTIT_HOTPLUG_DELETE_MAX_TIME:-60}"
 
 if ! bashio::config.true 'automount_on_plugin'; then
     bashio::log.info "Hot-plug disabled (automount_on_plugin=false)"
@@ -11,153 +22,283 @@ fi
 
 bashio::log.blue "Hot-plug monitor active"
 
-ipaddress=$(bashio::addon.ip_address)
 usage=$(bashio::config 'mount_location')
-username="_mountit_"
-password=$(cat /tmp/mountit_password 2>/dev/null || echo "")
 specific_label=$(bashio::config 'specific_label' 2>/dev/null || echo "")
 
-mount_and_register() {
+reconcile_drive_and_folders() {
+    local mdisk="$1" name share location drive failures=0
+    local -a folder_names=()
+
+    if ! mountit::init_supervisor_context; then
+        bashio::log.warning "Hot-plug: $mdisk mounted locally; HA registration context is unavailable"
+        return 1
+    fi
+
+    mountit::reconcile_mount "$mdisk" "$mdisk" "$usage" drive "$mdisk" false || ((failures += 1))
+
+    mapfile -t folder_names < <(jq -r --arg d "$mdisk" \
+        'to_entries[] | select(.value.drive_key == $d) | .key' \
+        "$MOUNTIT_FOLDER_MOUNTS_FILE" 2>/dev/null)
+    for name in "${folder_names[@]}"; do
+        share=$(jq -r --arg n "$name" '.[$n].share' "$MOUNTIT_FOLDER_MOUNTS_FILE")
+        location=$(jq -r --arg n "$name" '.[$n].location' "$MOUNTIT_FOLDER_MOUNTS_FILE")
+        drive=$(jq -r --arg n "$name" '.[$n].drive_key' "$MOUNTIT_FOLDER_MOUNTS_FILE")
+        mountit::reconcile_mount "$name" "$share" "$location" folder "$drive" false || ((failures += 1))
+    done
+
+    ((failures == 0))
+}
+
+mount_and_register_locked() {
     local devname="$1"
     local fstype label mdisk options="nosuid,relatime" type="auto" cmd="mount"
+    local mounted=false already_mounted=false fix_out="" state_tmp=""
 
     label=$(lsblk "$devname" -no LABEL 2>/dev/null | tr -d '[:space:]')
     fstype=$(lsblk "$devname" -no FSTYPE 2>/dev/null | tr -d '[:space:]')
 
-    [[ -z "$fstype" ]] && return
-    [[ "$label" == hassos* ]] && return
+    [[ -n "$fstype" ]] || return 0
+    [[ "$label" != hassos* ]] || return 0
 
     if [[ -z "$label" ]]; then
         if ! bashio::config.true 'mount_unlabeled'; then
             bashio::log.info "Hot-plug: $devname has no label, skipping (mount_unlabeled=false)"
-            return
+            return 0
         fi
         label="unlabeled_$(basename "$devname")"
-        echo "$devname" > "/tmp/devmap_${label}"
+        printf '%s\n' "$devname" > "/tmp/devmap_${label}"
     fi
 
     if [[ -n "$specific_label" && "$specific_label" != "null" && "$label" != "$specific_label" ]]; then
         bashio::log.info "Hot-plug: $devname ('$label') does not match specific_label, skipping"
-        return
+        return 0
     fi
 
-    # HA Supervisor mount names must match ^[A-Za-z0-9_]+$
-    mdisk=$(printf '%s' "$label" | sed 's/[^A-Za-z0-9_]/_/g')
+    mdisk=$(mountit::sanitize_name "$label")
 
-    if jq -e --arg k "$mdisk" '.[$k]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
-        return
-    fi
-
-    bashio::log.info "Hot-plug: $devname detected ($mdisk [$fstype])"
-
-    mkdir -p "/mnt/$mdisk"
-    chmod a+rwx "/mnt/$mdisk"
-
-    local m_args=()
-    case "$fstype" in
-        exfat|vfat|msdos) options="${options},umask=000" ;;
-        ntfs)              options="${options},umask=000"; type="ntfs3" ;;
-        apfs)              cmd="mount.apfs"; type=""; options="" ;;
-    esac
-    [[ -n "$type" ]]    && m_args+=("-t" "$type")
-    [[ -n "$options" ]] && m_args+=("-o" "$options")
-    m_args+=("$devname")
-
-    local mounted=false fix_out=""
-    if $cmd "${m_args[@]}" "/mnt/$mdisk"; then
-        mounted=true
-    elif [[ "$fstype" == "ntfs" ]]; then
-        # try clean up NTFS dirty state with ntfsfix
-        bashio::log.warning "Hot-plug: $mdisk [ntfs] mount failed, running ntfsfix..."
-        if fix_out=$(ntfsfix -d "$devname" 2>&1); then
-            bashio::log.info "Hot-plug: $mdisk ntfsfix: ${fix_out//$'\n'/; }"
-            bashio::log.warning "Hot-plug: $mdisk — NTFS dirty flag cleared without a full repair; if the drive was not safely ejected, verify data with chkdsk on Windows"
-            $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
+    if jq -e --arg k "$mdisk" '.[$k]' "$MOUNTIT_MOUNTS_FILE" > /dev/null 2>&1; then
+        if findmnt -n -o TARGET "/mnt/$mdisk" > /dev/null 2>&1; then
+            already_mounted=true
+            mounted=true
+            bashio::log.info "Hot-plug: $mdisk is already mounted locally; reconciling HA storage"
         else
-            bashio::log.warning "Hot-plug: $mdisk ntfsfix failed: ${fix_out//$'\n'/; }"
+            state_tmp=$(mktemp /tmp/mountit-drive-state.XXXXXX) || return 1
+            if jq --arg k "$mdisk" 'del(.[$k])' "$MOUNTIT_MOUNTS_FILE" > "$state_tmp" \
+                && mv -f "$state_tmp" "$MOUNTIT_MOUNTS_FILE"; then
+                :
+            else
+                rm -f "$state_tmp"
+                return 1
+            fi
         fi
     fi
 
-    if ! $mounted; then
-        bashio::log.error "Hot-plug: failed to mount $mdisk"
-        rmdir "/mnt/$mdisk" 2>/dev/null || true
-        return
+    if ! $already_mounted; then
+        bashio::log.info "Hot-plug: $devname detected ($mdisk [$fstype])"
+        mkdir -p "/mnt/$mdisk"
+        chmod a+rwx "/mnt/$mdisk"
+
+        local -a m_args=()
+        case "$fstype" in
+            exfat|vfat|msdos) options="${options},umask=000" ;;
+            ntfs)              options="${options},umask=000"; type="ntfs3" ;;
+            apfs)              cmd="mount.apfs"; type=""; options="" ;;
+        esac
+        [[ -n "$type" ]]    && m_args+=("-t" "$type")
+        [[ -n "$options" ]] && m_args+=("-o" "$options")
+        m_args+=("$devname")
+
+        if $cmd "${m_args[@]}" "/mnt/$mdisk"; then
+            mounted=true
+        elif [[ "$fstype" == "ntfs" ]]; then
+            bashio::log.warning "Hot-plug: $mdisk [ntfs] mount failed, running ntfsfix..."
+            if fix_out=$(ntfsfix -d "$devname" 2>&1); then
+                bashio::log.info "Hot-plug: $mdisk ntfsfix: ${fix_out//$'\n'/; }"
+                bashio::log.warning "Hot-plug: $mdisk — NTFS dirty flag cleared without a full repair; verify data with chkdsk on Windows"
+                $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
+            else
+                bashio::log.warning "Hot-plug: $mdisk ntfsfix failed: ${fix_out//$'\n'/; }"
+            fi
+        fi
+
+        if ! $mounted; then
+            bashio::log.error "Hot-plug: failed to mount $mdisk"
+            rmdir "/mnt/$mdisk" 2>/dev/null || true
+            return 1
+        fi
+
+        state_tmp=$(mktemp /tmp/mountit-drive-state.XXXXXX) || {
+            umount -l "/mnt/$mdisk" 2>/dev/null || true
+            rmdir "/mnt/$mdisk" 2>/dev/null || true
+            return 1
+        }
+        if jq --arg k "$mdisk" --arg dev "$devname" --arg mp "/mnt/$mdisk" \
+            --arg fs "${fstype:-unknown}" --arg source_label "$label" \
+            '. + {($k): {"device":$dev,"mount_point":$mp,"label":$k,"source_label":$source_label,"fstype":$fs}}' \
+            "$MOUNTIT_MOUNTS_FILE" > "$state_tmp" \
+            && mv -f "$state_tmp" "$MOUNTIT_MOUNTS_FILE"; then
+            :
+        else
+            rm -f "$state_tmp"
+            umount -l "/mnt/$mdisk" 2>/dev/null || true
+            rmdir "/mnt/$mdisk" 2>/dev/null || true
+            return 1
+        fi
+
     fi
 
-    jq --arg k "$mdisk" --arg dev "$devname" \
-       --arg mp "/mnt/$mdisk" --arg fs "${fstype:-unknown}" \
-       '. + {($k): {"device":$dev,"mount_point":$mp,"label":$k,"fstype":$fs}}' \
-       /tmp/mountit_mounts.json > /tmp/mountit_mounts.json.tmp \
-    && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
+    if ! mountit::append_samba_share "$mdisk" "/mnt/$mdisk"; then
+        bashio::log.error "Hot-plug: could not create Samba share $mdisk"
+        if ! $already_mounted; then
+            state_tmp=$(mktemp /tmp/mountit-drive-state.XXXXXX) || return 1
+            if ! jq --arg k "$mdisk" 'del(.[$k])' "$MOUNTIT_MOUNTS_FILE" > "$state_tmp" \
+                || ! mv -f "$state_tmp" "$MOUNTIT_MOUNTS_FILE"; then
+                rm -f "$state_tmp"
+                bashio::log.warning "Hot-plug: could not roll back runtime state for $mdisk"
+            fi
+            umount -l "/mnt/$mdisk" 2>/dev/null || true
+            rmdir "/mnt/$mdisk" 2>/dev/null || true
+        fi
+        return 1
+    fi
+    mountit::add_folder_mounts_for_drive "$mdisk" \
+        || bashio::log.warning "Hot-plug: one or more folder shares could not be configured for $mdisk"
+    smbcontrol smbd reload-config 2>/dev/null \
+        || bashio::log.warning "Hot-plug: could not reload the Samba configuration"
 
-    {
-        printf '[%s]\n' "$mdisk"
-        printf '   path = /mnt/%s\n' "$mdisk"
-        printf '   valid users = _mountit_\n'
-        printf '   read only = No\n'
-        printf '   guest ok = No\n'
-        printf '   force user = root\n'
-        printf '   create mask = 0777\n'
-        printf '   directory mask = 0777\n\n'
-    } >> /etc/samba/smb.conf
-    smbcontrol smbd reload-config 2>/dev/null || true
-
-    local cmd_json
-    cmd_json=$(jq -nrc \
-        --arg name "$mdisk" --arg share "$mdisk" \
-        --arg ip "${ipaddress/\/*/}" --arg user "$username" \
-        --arg pwd "$password" --arg usage "$usage" \
-        '{"name":$name,"type":"cifs","server":$ip,"share":$share,"username":$user,"password":$pwd,"usage":$usage}')
-
-    for rt in 1 2 3; do
-        bashio::api.supervisor POST /mounts "$cmd_json" && break
-        bashio::log.warning "Hot-plug: register retry $rt/3 for $mdisk"
-        sleep 3
-    done
-
-    bashio::log.green "Hot-plug: $mdisk mounted and registered"
+    if reconcile_drive_and_folders "$mdisk"; then
+        bashio::log.green "Hot-plug: $mdisk mounted and registered"
+    else
+        bashio::log.warning "Hot-plug: $mdisk mounted locally; HA registration recovery is pending"
+        return 1
+    fi
 }
 
-unmount_and_deregister() {
-    local devname="$1"
-    local mdisk
+mount_and_register() {
+    local status
+    if ! mountit::lock -1; then
+        bashio::log.warning "Hot-plug: could not acquire the mount-state lock"
+        return 1
+    fi
+    if mount_and_register_locked "$1"; then
+        status=0
+    else
+        status=$?
+    fi
+    mountit::unlock
+    return "$status"
+}
+
+unmount_and_deregister_locked() {
+    local devname="$1" mdisk name share cleanup_failures=0 state_tmp="" remove_status
+    local registration_available=true
+    local -a folder_names=()
 
     mdisk=$(jq -r --arg dev "$devname" \
-        'to_entries[] | select(.value.device==$dev) | .key' \
-        /tmp/mountit_mounts.json 2>/dev/null | head -1)
-
-    [[ -z "$mdisk" ]] && return
+        'to_entries[] | select(.value.device == $dev) | .key' \
+        "$MOUNTIT_MOUNTS_FILE" 2>/dev/null | head -1)
+    [[ -n "$mdisk" ]] || return 0
 
     bashio::log.info "Hot-plug: $devname removed ($mdisk)"
 
-    bashio::api.supervisor DELETE "/mounts/${mdisk}" 2>/dev/null \
-        || bashio::log.warning "Hot-plug: could not remove HA mount $mdisk"
+    if ! mountit::init_supervisor_context; then
+        registration_available=false
+        ((cleanup_failures += 1))
+    fi
 
-    umount -l "/mnt/$mdisk" 2>/dev/null || true
-    rmdir "/mnt/$mdisk" 2>/dev/null || true
+    mapfile -t folder_names < <(jq -r --arg d "$mdisk" \
+        'to_entries[] | select(.value.drive_key == $d) | .key' \
+        "$MOUNTIT_FOLDER_MOUNTS_FILE" 2>/dev/null)
 
-    python3 - "$mdisk" << 'PYEOF'
-import sys, re
-label = sys.argv[1]
-with open('/etc/samba/smb.conf', 'r') as f:
-    content = f.read()
-content = re.sub(rf'\[{re.escape(label)}\][^\[]*', '', content)
-with open('/etc/samba/smb.conf', 'w') as f:
-    f.write(content)
-PYEOF
-    smbcontrol smbd reload-config 2>/dev/null || true
+    # Remove child HA entries before their parent drive.
+    if $registration_available; then
+        for name in "${folder_names[@]}"; do
+            share=$(jq -r --arg n "$name" '.[$n].share' "$MOUNTIT_FOLDER_MOUNTS_FILE")
+            if mountit::remove_mount "$name" "$MOUNTIT_SERVER" "$share" false; then
+                remove_status=0
+            else
+                remove_status=$?
+            fi
+            ((remove_status == 0 || remove_status == 2)) || ((cleanup_failures += 1))
+        done
+        if mountit::remove_mount "$mdisk" "$MOUNTIT_SERVER" "$mdisk" false; then
+            remove_status=0
+        else
+            remove_status=$?
+        fi
+        ((remove_status == 0 || remove_status == 2)) || ((cleanup_failures += 1))
+    fi
 
-    jq --arg k "$mdisk" 'del(.[$k])' \
-        /tmp/mountit_mounts.json > /tmp/mountit_mounts.json.tmp \
-    && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
+    if ! mountit::remove_folder_shares_for_drive "$mdisk"; then
+        bashio::log.warning "Hot-plug: could not remove every folder share for $mdisk"
+        ((cleanup_failures += 1))
+    fi
+    if ! mountit::remove_samba_share "$mdisk"; then
+        bashio::log.warning "Hot-plug: could not remove Samba share $mdisk"
+        ((cleanup_failures += 1))
+    fi
+    if ! smbcontrol smbd reload-config 2>/dev/null; then
+        bashio::log.warning "Hot-plug: could not reload the Samba configuration"
+        ((cleanup_failures += 1))
+    fi
 
-    bashio::log.green "Hot-plug: $mdisk cleanly removed"
+    if findmnt -n -o TARGET "/mnt/$mdisk" > /dev/null 2>&1 \
+        && ! umount -l "/mnt/$mdisk" 2>/dev/null; then
+        bashio::log.warning "Hot-plug: could not detach /mnt/$mdisk"
+        ((cleanup_failures += 1))
+    fi
+    if [[ -d "/mnt/$mdisk" ]] && ! rmdir "/mnt/$mdisk" 2>/dev/null; then
+        bashio::log.warning "Hot-plug: could not remove /mnt/$mdisk"
+        ((cleanup_failures += 1))
+    fi
+
+    state_tmp=$(mktemp /tmp/mountit-drive-state.XXXXXX) || return 1
+    if jq --arg k "$mdisk" 'del(.[$k])' "$MOUNTIT_MOUNTS_FILE" > "$state_tmp" \
+        && mv -f "$state_tmp" "$MOUNTIT_MOUNTS_FILE"; then
+        :
+    else
+        rm -f "$state_tmp"
+        return 1
+    fi
+
+    if ((cleanup_failures == 0)); then
+        bashio::log.green "Hot-plug: $mdisk cleanly removed"
+    else
+        bashio::log.warning "Hot-plug: $mdisk removed locally; HA cleanup recovery is pending"
+    fi
+}
+
+unmount_and_deregister() {
+    local status
+    if ! mountit::lock -1; then
+        bashio::log.warning "Hot-plug: could not acquire the mount-state lock"
+        return 1
+    fi
+    if unmount_and_deregister_locked "$1"; then
+        status=0
+    else
+        status=$?
+    fi
+    mountit::unlock
+    return "$status"
 }
 
 # ---- Event loop ----
 declare action="" devname="" devtype=""
+udev_monitor_pid=""
 
-udevadm monitor --subsystem-match=block --property --udev 2>/dev/null | \
+stop_hotplug_monitor() {
+    mountit::cancel_api
+    [[ -z "$udev_monitor_pid" ]] || kill "$udev_monitor_pid" 2>/dev/null || true
+    mountit::unlock
+    exit 0
+}
+
+trap stop_hotplug_monitor TERM INT
+coproc MOUNTIT_UDEV_MONITOR { exec udevadm monitor --subsystem-match=block --property --udev 2>/dev/null; }
+udev_monitor_pid=$MOUNTIT_UDEV_MONITOR_PID
+udev_monitor_fd=${MOUNTIT_UDEV_MONITOR[0]}
+
 while IFS='=' read -r key value; do
     value="${value%$'\r'}"
     case "$key" in
@@ -167,11 +308,22 @@ while IFS='=' read -r key value; do
         "")
             if [[ "$devtype" == "partition" ]]; then
                 case "$action" in
-                    add)    sleep 2; mount_and_register "$devname" ;;
-                    remove) unmount_and_deregister "$devname" ;;
+                    add)
+                        sleep 2
+                        if ! mount_and_register "$devname"; then
+                            bashio::log.warning "Hot-plug: add handling for $devname is incomplete; recovery will retry"
+                        fi
+                        ;;
+                    remove)
+                        if ! unmount_and_deregister "$devname"; then
+                            bashio::log.warning "Hot-plug: removal handling for $devname is incomplete"
+                        fi
+                        ;;
                 esac
             fi
             action=""; devname=""; devtype=""
             ;;
     esac
-done
+done <&"$udev_monitor_fd"
+
+wait "$udev_monitor_pid" 2>/dev/null || true

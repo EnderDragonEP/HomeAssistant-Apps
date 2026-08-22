@@ -1,30 +1,114 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# Remove all registered CIFS mounts from HA Supervisor on shutdown
+# Remove confirmed Mount It entries from HA, children before their parent drive
 # ==============================================================================
-bashio::log.info "Deregistering drives from HA network storage..."
 
-if [[ ! -f /tmp/mountit_mounts.json ]]; then
-    bashio::log.info "No state file found, nothing to deregister"
+source /usr/local/lib/mountit-supervisor.sh
+
+# Shutdown has a finite Supervisor stop budget. Submit at most one DELETE for
+# each entry and leave any incomplete work in the persistent manifest for the
+# next startup reconciler.
+MOUNTIT_REMOVE_DELAYS="${MOUNTIT_SHUTDOWN_REMOVE_DELAYS:-0}"
+MOUNTIT_API_READ_MAX_TIME="${MOUNTIT_SHUTDOWN_READ_MAX_TIME:-10}"
+
+bashio::log.info "Deregistering Mount It network storage..."
+
+if ! mountit::init_supervisor_context; then
+    bashio::log.warning "Could not initialize HA cleanup; managed entries will be reconciled on the next start"
+    exit 0
+fi
+if ! mountit::lock 15; then
+    bashio::log.warning "Could not acquire the HA cleanup lock"
     exit 0
 fi
 
-while IFS= read -r label; do
-    [[ -z "$label" ]] && continue
-    name="${label}"
-    bashio::log.info "Removing HA mount: $name"
-    bashio::api.supervisor DELETE "/mounts/${name}" 2>/dev/null \
-        && bashio::log.info "Removed $name" \
-        || bashio::log.warning "Could not remove $name (may already be gone)"
-done < <(jq -r 'keys[]' /tmp/mountit_mounts.json 2>/dev/null)
+cleanup_failures=0
+cleanup_deadline=$((SECONDS + 200))
+declare -A cleanup_seen=()
 
-# Deregister folder mounts
-while IFS= read -r mount_name; do
-    [[ -z "$mount_name" ]] && continue
-    bashio::api.supervisor DELETE "/mounts/${mount_name}" 2>/dev/null \
-        && bashio::log.info "Removed folder mount: $mount_name" \
-        || bashio::log.warning "Could not remove $mount_name (may already be gone)"
-done < <(jq -r 'keys[]' /tmp/mountit_folder_mounts.json 2>/dev/null)
+remove_candidate() {
+    local name="$1" server="$2" share="$3" remove_status cleanup_key
+    local remaining delete_budget
 
-bashio::log.info "HA deregistration complete"
+    cleanup_key="${name}|${server}|${share}"
+    [[ -z "${cleanup_seen[$cleanup_key]:-}" ]] || return 0
+    cleanup_seen[$cleanup_key]=1
+
+    remaining=$((cleanup_deadline - SECONDS))
+    if ((remaining <= 30)); then
+        bashio::log.warning "  $name — cleanup deferred to stay within the shutdown timeout"
+        ((cleanup_failures += 1))
+        return 0
+    fi
+    delete_budget=$((remaining - 25))
+    ((delete_budget > 90)) && delete_budget=90
+    ((delete_budget < 5)) && delete_budget=5
+    MOUNTIT_API_DELETE_MAX_TIME="$delete_budget"
+
+    if mountit::remove_mount "$name" "$server" "$share" false; then
+        remove_status=0
+    else
+        remove_status=$?
+    fi
+    if ((remove_status == 1)); then
+        ((cleanup_failures += 1))
+    fi
+}
+
+remove_kind() {
+    local kind="$1" name server share previous_server previous_share
+    local -a names=()
+
+    # Include current desired state even if registration succeeded but its
+    # final verification was interrupted before runtime ownership was recorded.
+    if [[ "$kind" == "folder" ]]; then
+        mapfile -t names < <(jq -r 'keys[]' "$MOUNTIT_FOLDER_MOUNTS_FILE" 2>/dev/null)
+        for name in "${names[@]}"; do
+            share=$(jq -r --arg n "$name" '.[$n].share' "$MOUNTIT_FOLDER_MOUNTS_FILE")
+            remove_candidate "$name" "$MOUNTIT_SERVER" "$share"
+        done
+    else
+        mapfile -t names < <(jq -r 'keys[]' "$MOUNTIT_MOUNTS_FILE" 2>/dev/null)
+        for name in "${names[@]}"; do
+            remove_candidate "$name" "$MOUNTIT_SERVER" "$name"
+        done
+    fi
+
+    mapfile -t names < <(jq -r --arg kind "$kind" \
+        'to_entries[] | select(.value.kind == $kind) | .key' \
+        "$MOUNTIT_REGISTERED_FILE" 2>/dev/null)
+    for name in "${names[@]}"; do
+        server=$(jq -r --arg n "$name" '.[$n].server' "$MOUNTIT_REGISTERED_FILE")
+        share=$(jq -r --arg n "$name" '.[$n].share' "$MOUNTIT_REGISTERED_FILE")
+        remove_candidate "$name" "$server" "$share"
+    done
+
+    # Persistent ownership covers entries from an earlier interrupted run.
+    mapfile -t names < <(jq -r --arg kind "$kind" \
+        'to_entries[] | select(.value.kind == $kind) | .key' \
+        "$MOUNTIT_MANAGED_FILE" 2>/dev/null)
+    for name in "${names[@]}"; do
+        server=$(jq -r --arg n "$name" '.[$n].server' "$MOUNTIT_MANAGED_FILE")
+        share=$(jq -r --arg n "$name" '.[$n].share' "$MOUNTIT_MANAGED_FILE")
+        remove_candidate "$name" "$server" "$share"
+
+        previous_server=$(jq -r --arg n "$name" '.[$n].previous_server // empty' "$MOUNTIT_MANAGED_FILE")
+        previous_share=$(jq -r --arg n "$name" '.[$n].previous_share // empty' "$MOUNTIT_MANAGED_FILE")
+        if [[ -n "$previous_server" && -n "$previous_share" ]]; then
+            remove_candidate "$name" "$previous_server" "$previous_share"
+        fi
+    done
+}
+
+# Folder mounts depend on their parent's Samba path and are removed first.
+remove_kind folder
+remove_kind drive
+
+mountit::unlock
+
+if ((cleanup_failures == 0)); then
+    bashio::log.info "HA deregistration complete"
+else
+    bashio::log.warning "HA deregistration incomplete — $cleanup_failures mount(s) will need reconciliation"
+fi

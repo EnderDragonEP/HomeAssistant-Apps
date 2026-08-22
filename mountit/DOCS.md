@@ -8,10 +8,15 @@ Home Assistant network storage (CIFS) via the Supervisor Mounts API.
 1. On startup, detected drives are mounted inside the addon at `/mnt/<label>`
 2. A minimal Samba server exposes each mount as a private share
 3. The HA Supervisor registers each share as network storage (Settings → Storage)
-4. On shutdown, HA network mounts are cleanly removed and drives unmounted
+4. Mount It verifies each registration and automatically retries transient failures
+5. On shutdown, folder entries are removed before their parent drive, then drives are unmounted
 
 Hot-plugging a drive while the addon is running will automatically mount and register
 it (if `automount_on_plugin` is enabled).
+
+Mount It creates a private random Samba credential on first start and stores it in
+the addon's protected data directory. Reusing that credential across restarts lets
+existing Home Assistant mounts reconnect safely. It is not a user-facing password.
 
 ## Configuration
 
@@ -70,10 +75,20 @@ folder_mounts:
 Each folder mount:
 
 - Requires the parent drive to be mounted first
-- The folder path must already exist on the drive
+- The folder path must already exist and resolve within the selected drive
 - Is registered in HA as a separate network storage entry
 - Can use an optional `name` containing letters, numbers, and underscores
 - Appears in HA using `name`, or `<DriveLabel>_<FolderPath>` when `name` is omitted
+- Is restored together with its parent drive after a hot-plug event
+
+## Registration recovery
+
+Mount It checks the live Supervisor state instead of deleting and recreating healthy
+network storage on every start. Failed entries are reloaded or refreshed, and a
+background recovery monitor retries temporary Supervisor/systemd failures once per
+minute. A success message is only written after Supervisor reports the entry as
+active. Entries with the same name but a different server or share are treated as
+external and are never overwritten or removed.
 
 ## Supported filesystems
 

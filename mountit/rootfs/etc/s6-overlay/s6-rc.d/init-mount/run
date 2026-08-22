@@ -16,11 +16,15 @@ echo "{}" > /tmp/mountit_mounts.json
 mkdir -p /mnt
 
 # ---- Samba service account ----
-PASSWORD=$(sed 's/[-]//g' /proc/sys/kernel/random/uuid | head -c 20)
-(umask 077; echo "$PASSWORD" > /tmp/mountit_password)
-(echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -a -s _mountit_ 2>/dev/null \
-    || (echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -s _mountit_ 2>/dev/null \
-    || bashio::log.warning "Could not set Samba password — HA registration may fail"
+source /usr/local/lib/mountit-credentials.sh
+if ! mountit::prepare_credentials; then
+    bashio::exit.nok "Could not create or load the private Samba credential"
+fi
+PASSWORD="$MOUNTIT_PASSWORD"
+if ! { (printf '%s\n%s\n' "$PASSWORD" "$PASSWORD") | smbpasswd -a -s _mountit_ 2>/dev/null \
+    || (printf '%s\n%s\n' "$PASSWORD" "$PASSWORD") | smbpasswd -s _mountit_ 2>/dev/null; }; then
+    bashio::exit.nok "Could not set the private Samba credential"
+fi
 
 # ---- Config ----
 specific_label=$(bashio::config 'specific_label' 2>/dev/null || echo "")
@@ -150,6 +154,22 @@ if [[ ${#drives_to_mount[@]} -eq 0 ]]; then
 fi
 
 # ---- Mount ----
+record_drive_state() {
+    local key="$1" device="$2" mount_point="$3" filesystem="$4" source_label="$5"
+    local state_tmp
+
+    state_tmp=$(mktemp /tmp/mountit-drive-state.XXXXXX) || return 1
+    if jq --arg k "$key" --arg dev "$device" --arg mp "$mount_point" \
+        --arg fs "$filesystem" --arg source_label "$source_label" \
+        '. + {($k): {"device":$dev,"mount_point":$mp,"label":$k,"source_label":$source_label,"fstype":$fs}}' \
+        /tmp/mountit_mounts.json > "$state_tmp" \
+        && mv -f "$state_tmp" /tmp/mountit_mounts.json; then
+        return 0
+    fi
+    rm -f "$state_tmp"
+    return 1
+}
+
 mount_drive() {
     local disk="$1"
     local dev fstype options="nosuid,relatime" type="auto" cmd="mount"
@@ -178,11 +198,11 @@ mount_drive() {
 
     if findmnt -n -o TARGET "/mnt/$mdisk" > /dev/null 2>&1; then
         bashio::log.info "  $mdisk — already mounted"
-        jq --arg k "$mdisk" --arg dev "$dev" --arg mp "/mnt/$mdisk" --arg fs "unknown" \
-           '. + {($k): {"device":$dev,"mount_point":$mp,"label":$k,"fstype":$fs}}' \
-           /tmp/mountit_mounts.json > /tmp/mountit_mounts.json.tmp \
-        && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
-        return 0
+        if record_drive_state "$mdisk" "$dev" "/mnt/$mdisk" unknown "$disk"; then
+            return 0
+        fi
+        bashio::log.error "  $mdisk — could not record mounted-drive state"
+        return 1
     fi
 
     fstype=$(lsblk "$dev" -no FSTYPE 2>/dev/null | head -1 | tr -d '[:space:]')
@@ -219,12 +239,14 @@ mount_drive() {
     fi
 
     if $mounted; then
-        bashio::log.green "  $mdisk [$fstype] → /mnt/$mdisk"
-        jq --arg k "$mdisk" --arg dev "$dev" \
-           --arg mp "/mnt/$mdisk" --arg fs "${fstype:-unknown}" \
-           '. + {($k): {"device":$dev,"mount_point":$mp,"label":$k,"fstype":$fs}}' \
-           /tmp/mountit_mounts.json > /tmp/mountit_mounts.json.tmp \
-        && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
+        if record_drive_state "$mdisk" "$dev" "/mnt/$mdisk" "${fstype:-unknown}" "$disk"; then
+            bashio::log.green "  $mdisk [$fstype] → /mnt/$mdisk"
+        else
+            bashio::log.error "  $mdisk — could not record mounted-drive state"
+            umount -l "/mnt/$mdisk" 2>/dev/null || true
+            rmdir "/mnt/$mdisk" 2>/dev/null || true
+            return 1
+        fi
     else
         bashio::log.error "  $mdisk [$fstype] — mount failed"
         rmdir "/mnt/$mdisk" 2>/dev/null || true
@@ -296,103 +318,13 @@ done < <(jq -r 'keys[]' /tmp/mountit_mounts.json 2>/dev/null)
 } > /etc/samba/smb.conf
 
 # ---- Folder mounts (subfolder → different HA location) ----
-echo "{}" > /tmp/mountit_folder_mounts.json
-
+source /usr/local/lib/mountit-folders.sh
 folder_mount_count=$(jq '.folder_mounts | length' /data/options.json 2>/dev/null || echo "0")
-
 if [[ "$folder_mount_count" -gt 0 ]]; then
     bashio::log.blue "Folder mounts"
-    reserved_names="media share backup config addons ssl homeassistant"
-
-    for i in $(seq 0 $((folder_mount_count - 1))); do
-        configured_name=$(jq -r ".folder_mounts[$i].name // empty" /data/options.json)
-        drive=$(jq -r ".folder_mounts[$i].drive"    /data/options.json)
-        folder=$(jq -r ".folder_mounts[$i].folder"  /data/options.json)
-        location=$(jq -r ".folder_mounts[$i].location" /data/options.json)
-
-        # Mount keys are sanitized to ^[A-Za-z0-9_]+$; accept the raw label too
-        drive_key=$(printf '%s' "$drive" | sed 's/[^A-Za-z0-9_]/_/g')
-
-        # Drive must be mounted
-        if ! jq -e --arg d "$drive_key" '.[$d]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
-            bashio::log.error "  $drive/$folder — drive '$drive' is not mounted, skipping"
-            continue
-        fi
-
-        drive_mp=$(jq -r --arg d "$drive_key" '.[$d].mount_point' /tmp/mountit_mounts.json)
-        full_path="${drive_mp}/${folder}"
-
-        # Folder must exist
-        if [[ ! -d "$full_path" ]]; then
-            bashio::log.error "  $drive/$folder — path does not exist ($full_path), skipping"
-            continue
-        fi
-
-        # Auto-generate Samba share name: drive_sanitized_folder
-        folder_clean=$(echo "$folder" | sed 's|[^a-zA-Z0-9]|_|g; s|_\+|_|g; s|^_||; s|_$||')
-        share_name="${drive_key}_${folder_clean}"
-        mount_name="${configured_name:-$share_name}"
-
-        # HA Supervisor mount names may contain only letters, numbers, and underscores
-        if [[ ! "$mount_name" =~ ^[A-Za-z0-9_]+$ ]]; then
-            bashio::log.error "  $drive/$folder — network storage name '$mount_name' is invalid, skipping"
-            continue
-        fi
-
-        # Reserved name check
-        for rn in $reserved_names; do
-            if [[ "${mount_name,,}" == "${rn,,}" ]]; then
-                bashio::log.error "  $drive/$folder — network storage name '$mount_name' is reserved, skipping"
-                continue 2
-            fi
-        done
-
-        # The Samba share must not conflict with an existing drive share
-        if jq -e --arg n "$share_name" '.[$n]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
-            bashio::log.error "  $drive/$folder — Samba share '$share_name' conflicts with a drive mount, skipping"
-            continue
-        fi
-
-        # The HA mount name must not conflict with an existing drive mount
-        if jq -e --arg n "$mount_name" '.[$n]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
-            bashio::log.error "  $drive/$folder — network storage name '$mount_name' conflicts with a drive mount, skipping"
-            continue
-        fi
-
-        # The HA mount name must be unique across folder mounts
-        if jq -e --arg n "$mount_name" '.[$n]' /tmp/mountit_folder_mounts.json > /dev/null 2>&1; then
-            bashio::log.error "  $drive/$folder — network storage name '$mount_name' conflicts with another folder mount, skipping"
-            continue
-        fi
-
-        # The generated Samba share must also be unique across folder mounts
-        if jq -e --arg n "$share_name" '.[] | select(.share == $n)' /tmp/mountit_folder_mounts.json > /dev/null 2>&1; then
-            bashio::log.error "  $drive/$folder — Samba share '$share_name' conflicts with another folder mount, skipping"
-            continue
-        fi
-
-        # Append Samba share
-        {
-            printf '[%s]\n'                    "$share_name"
-            printf '   path = %s\n'            "$full_path"
-            printf '   valid users = _mountit_\n'
-            printf '   read only = No\n'
-            printf '   guest ok = No\n'
-            printf '   force user = root\n'
-            printf '   create mask = 0777\n'
-            printf '   directory mask = 0777\n\n'
-        } >> /etc/samba/smb.conf
-
-        # Track in state
-        jq --arg k "$mount_name" --arg share "$share_name" \
-           --arg drive "$drive" --arg folder "$folder" \
-           --arg path "$full_path" --arg loc "$location" \
-           '. + {($k): {"share":$share,"drive":$drive,"folder":$folder,"path":$path,"location":$loc}}' \
-           /tmp/mountit_folder_mounts.json > /tmp/mountit_folder_mounts.json.tmp \
-        && mv /tmp/mountit_folder_mounts.json.tmp /tmp/mountit_folder_mounts.json
-
-        bashio::log.green "  $drive/$folder → $mount_name [$share_name] ($location)"
-    done
+fi
+if ! mountit::configure_all_folder_mounts; then
+    bashio::exit.nok "Could not configure folder mounts"
 fi
 
 folder_mounted_count=$(jq 'length' /tmp/mountit_folder_mounts.json)
