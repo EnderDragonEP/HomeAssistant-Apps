@@ -1,0 +1,10 @@
+# Home Assistant executes these files inside a Linux container. Force LF even
+# when the repository is checked out or edited on Windows; s6 treats a trailing
+# carriage return in service metadata (for example, "longrun\r") as invalid.
+.gitattributes text eol=lf
+mountit/rootfs/** text eol=lf
+mountit/tests/*.sh text eol=lf
+mountit/Dockerfile text eol=lf
+
+# Image assets must never be line-ending normalized.
+*.png binary
