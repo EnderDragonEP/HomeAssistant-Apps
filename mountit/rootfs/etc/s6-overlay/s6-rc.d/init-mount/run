@@ -254,6 +254,7 @@ cat << 'GLOBAL_END'
    printcap name = /dev/null
    disable spoolss = Yes
    ea support = Yes
+   mangled names = no
 GLOBAL_END
 
 # full_audit goes last in the chain so it reports the real on-disk path, and so
