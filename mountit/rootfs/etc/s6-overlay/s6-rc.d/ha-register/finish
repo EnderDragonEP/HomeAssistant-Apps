@@ -2,29 +2,36 @@
 # shellcheck shell=bash
 # ==============================================================================
 # Remove all registered CIFS mounts from HA Supervisor on shutdown
+#
+# This has to finish while smbd is still up. s6 stops ha-register before smbd,
+# and Supervisor's DELETE synchronously unmounts the share on the host; if smbd
+# goes away first the host kernel CIFS client wedges on EHOSTDOWN and the
+# systemd mount unit only clears on reboot.
 # ==============================================================================
+
+deregister() {
+    local name="$1" response
+    [[ -z "$name" ]] && return
+
+    response=$(curl -sS -m 15 -X DELETE \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        "http://supervisor/mounts/${name}" 2>/dev/null)
+
+    if [[ "$(jq -r '.result // empty' <<< "$response")" == "ok" ]]; then
+        bashio::log.info "  $name — removed"
+    else
+        bashio::log.warning "  $name — could not be removed (may already be gone)"
+    fi
+}
+
 bashio::log.info "Deregistering drives from HA network storage..."
 
-if [[ ! -f /tmp/mountit_mounts.json ]]; then
-    bashio::log.info "No state file found, nothing to deregister"
-    exit 0
-fi
-
 while IFS= read -r label; do
-    [[ -z "$label" ]] && continue
-    name="${label}"
-    bashio::log.info "Removing HA mount: $name"
-    bashio::api.supervisor DELETE "/mounts/${name}" 2>/dev/null \
-        && bashio::log.info "Removed $name" \
-        || bashio::log.warning "Could not remove $name (may already be gone)"
+    deregister "$label"
 done < <(jq -r 'keys[]' /tmp/mountit_mounts.json 2>/dev/null)
 
-# Deregister folder mounts
 while IFS= read -r mount_name; do
-    [[ -z "$mount_name" ]] && continue
-    bashio::api.supervisor DELETE "/mounts/${mount_name}" 2>/dev/null \
-        && bashio::log.info "Removed folder mount: $mount_name" \
-        || bashio::log.warning "Could not remove $mount_name (may already be gone)"
+    deregister "$mount_name"
 done < <(jq -r 'keys[]' /tmp/mountit_folder_mounts.json 2>/dev/null)
 
 bashio::log.info "HA deregistration complete"
