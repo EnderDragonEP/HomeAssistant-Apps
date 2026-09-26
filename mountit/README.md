@@ -19,7 +19,26 @@ Icon & banner is made in [draw.io](https://github.com/jgraph/drawio)
 - Advanced folder mapping: expose subfolders to different HA locations
 - HDD idle power-down support
 - Configurable file activity logging for troubleshooting
+- Automation events when drives are mounted, removed, or fail to mount
 - Clean shutdown: deregisters mounts and unmounts drives
+
+## Automation example
+
+Start Frigate only after Mount It has mounted its drives, so recordings never land on the
+wrong disk. Turn off **Start on boot** for Frigate and add this automation:
+
+```yaml
+alias: Start Frigate when drives are ready
+triggers:
+  - trigger: event
+    event_type: mountit_ready
+actions:
+  - action: hassio.app_start
+    data:
+      app: ccab4aaf_frigate
+```
+
+See [DOCS.md](DOCS.md#automations) for all events and their data.
 
 ## Supported filesystems
 

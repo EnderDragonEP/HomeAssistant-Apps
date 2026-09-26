@@ -3,6 +3,8 @@
 # ==============================================================================
 # Register mounted drives with the HA Supervisor as CIFS network storage
 # ==============================================================================
+# shellcheck source=/dev/null
+source /usr/lib/mountit/events.sh
 
 if [[ ! -f /tmp/mountit_mounts.json ]] || [[ "$(jq 'length' /tmp/mountit_mounts.json)" -eq 0 ]]; then
     bashio::log.info "No drives to register"
@@ -47,6 +49,11 @@ while IFS= read -r label; do
         sleep 3
     done
     $success || bashio::log.error "  $label — failed to register after 3 attempts"
+
+    mountit::event.queue drive_mounted "$(jq -c --arg n "$label" --arg loc "$usage" \
+        --argjson reg "$success" \
+        '.[$n] | {"name":$n,"device":.device,"fstype":.fstype,"mount_point":.mount_point,"location":$loc,"registered":$reg,"source":"startup"}' \
+        /tmp/mountit_mounts.json)"
 
 done < <(jq -r 'keys[]' /tmp/mountit_mounts.json 2>/dev/null)
 
