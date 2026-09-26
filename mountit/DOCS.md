@@ -75,6 +75,39 @@ Each folder mount:
 - Can use an optional `name` containing letters, numbers, and underscores
 - Appears in HA using `name`, or `<DriveLabel>_<FolderPath>` when `name` is omitted
 
+## Automations
+
+Mount It fires Home Assistant events you can use as automation triggers:
+
+| Event | When | Data |
+| --- | --- | --- |
+| `mountit_drive_mounted` | A drive was mounted (at startup or when plugged in) | `name`, `device`, `fstype`, `mount_point`, `location`, `registered`, `source` |
+| `mountit_drive_removed` | A mounted drive was unplugged | `name`, `device` |
+| `mountit_mount_failed` | A drive was found but could not be mounted | `name`, `device`, `fstype`, `source` |
+| `mountit_ntfs_repaired` | An NTFS drive's dirty flag was cleared so it could mount | `name`, `device` |
+| `mountit_ready` | Startup finished and Home Assistant is reachable | `drives`, `folder_mounts` |
+
+`name` is the drive's network storage name, `registered` tells whether it was added to HA
+network storage, and `source` is `startup` or `hotplug`. Startup events are held until Home
+Assistant is running, so they still arrive after a host reboot.
+
+**Example:** Get notified when the `Backup` drive is unplugged:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: mountit_drive_removed
+    event_data:
+      name: Backup
+actions:
+  - action: notify.notify
+    data:
+      message: "Backup drive was removed ({{ trigger.event.data.device }})"
+```
+
+To check whether a drive is mounted right now (for conditions or dashboards), enable the
+**Connected** binary sensor of its network storage entry in the Supervisor integration.
+
 ## Supported filesystems
 
 | Filesystem | Support |

@@ -3,6 +3,19 @@
 # ==============================================================================
 # Monitor for hot-plug drive events and mount/unmount automatically
 # ==============================================================================
+# shellcheck source=/dev/null
+source /usr/lib/mountit/events.sh
+
+# Deliver startup events once Home Assistant Core is reachable, then announce
+# what is mounted so automations can sync up after an addon or host restart.
+(
+    mountit::event.flush
+    mountit::event.send ready "$(jq -nc \
+        --slurpfile d /tmp/mountit_mounts.json \
+        --slurpfile f /tmp/mountit_folder_mounts.json \
+        '{"drives":($d[0] // {} | keys),"folder_mounts":($f[0] // {} | keys)}')" \
+        || bashio::log.warning "Could not deliver event mountit_ready to Home Assistant"
+) &
 
 if ! bashio::config.true 'automount_on_plugin'; then
     bashio::log.info "Hot-plug disabled (automount_on_plugin=false)"
@@ -72,6 +85,8 @@ mount_and_register() {
         if fix_out=$(ntfsfix -d "$devname" 2>&1); then
             bashio::log.info "Hot-plug: $mdisk ntfsfix: ${fix_out//$'\n'/; }"
             bashio::log.warning "Hot-plug: $mdisk — NTFS dirty flag cleared without a full repair; if the drive was not safely ejected, verify data with chkdsk on Windows"
+            mountit::event ntfs_repaired "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+                '{"name":$n,"device":$dev}')"
             $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
         else
             bashio::log.warning "Hot-plug: $mdisk ntfsfix failed: ${fix_out//$'\n'/; }"
@@ -81,6 +96,8 @@ mount_and_register() {
     if ! $mounted; then
         bashio::log.error "Hot-plug: failed to mount $mdisk"
         rmdir "/mnt/$mdisk" 2>/dev/null || true
+        mountit::event mount_failed "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+            --arg fs "$fstype" '{"name":$n,"device":$dev,"fstype":$fs,"source":"hotplug"}')"
         return
     fi
 
@@ -109,13 +126,18 @@ mount_and_register() {
         --arg pwd "$password" --arg usage "$usage" \
         '{"name":$name,"type":"cifs","server":$ip,"share":$share,"username":$user,"password":$pwd,"usage":$usage}')
 
+    local registered=false
     for rt in 1 2 3; do
-        bashio::api.supervisor POST /mounts "$cmd_json" && break
+        bashio::api.supervisor POST /mounts "$cmd_json" && registered=true && break
         bashio::log.warning "Hot-plug: register retry $rt/3 for $mdisk"
         sleep 3
     done
 
     bashio::log.green "Hot-plug: $mdisk mounted and registered"
+    mountit::event drive_mounted "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+        --arg fs "${fstype:-unknown}" --arg mp "/mnt/$mdisk" --arg loc "$usage" \
+        --argjson reg "$registered" \
+        '{"name":$n,"device":$dev,"fstype":$fs,"mount_point":$mp,"location":$loc,"registered":$reg,"source":"hotplug"}')"
 }
 
 unmount_and_deregister() {
@@ -152,6 +174,8 @@ PYEOF
     && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
 
     bashio::log.green "Hot-plug: $mdisk cleanly removed"
+    mountit::event drive_removed "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+        '{"name":$n,"device":$dev}')"
 }
 
 # ---- Event loop ----

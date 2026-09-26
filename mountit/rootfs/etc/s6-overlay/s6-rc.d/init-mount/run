@@ -12,7 +12,11 @@ if $(bashio::addon.protected); then
     bashio::exit.nok "Disable Protection Mode in addon settings to allow drive mounting"
 fi
 
+# shellcheck source=/dev/null
+source /usr/lib/mountit/events.sh
+
 echo "{}" > /tmp/mountit_mounts.json
+rm -f "$MOUNTIT_EVENT_QUEUE"
 mkdir -p /mnt
 
 # ---- Samba service account ----
@@ -212,6 +216,8 @@ mount_drive() {
         if fix_out=$(ntfsfix -d "$dev" 2>&1); then
             bashio::log.info "  $mdisk — ntfsfix: ${fix_out//$'\n'/; }"
             bashio::log.warning "  $mdisk — NTFS dirty flag cleared without a full repair; if the drive was not safely ejected, verify data with chkdsk on Windows"
+            mountit::event.queue ntfs_repaired "$(jq -nc --arg n "$mdisk" --arg dev "$dev" \
+                '{"name":$n,"device":$dev}')"
             $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
         else
             bashio::log.warning "  $mdisk — ntfsfix failed: ${fix_out//$'\n'/; }"
@@ -228,6 +234,8 @@ mount_drive() {
     else
         bashio::log.error "  $mdisk [$fstype] — mount failed"
         rmdir "/mnt/$mdisk" 2>/dev/null || true
+        mountit::event.queue mount_failed "$(jq -nc --arg n "$mdisk" --arg dev "$dev" \
+            --arg fs "$fstype" '{"name":$n,"device":$dev,"fstype":$fs,"source":"startup"}')"
         return 1
     fi
 }
