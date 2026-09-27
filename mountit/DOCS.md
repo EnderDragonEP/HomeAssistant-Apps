@@ -16,7 +16,7 @@ it (if `automount_on_plugin` is enabled).
 ## Configuration
 
 | Option | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `mount_unlabeled` | `false` | Mount drives that have no filesystem label |
 | `automount_on_plugin` | `true` | Automatically mount drives when plugged in |
 | `specific_label` | `""` | If set, only this drive label is mounted (applies to startup and hot-plug) |
@@ -74,6 +74,11 @@ Each folder mount:
 - Is registered in HA as a separate network storage entry
 - Can use an optional `name` containing letters, numbers, and underscores
 - Appears in HA using `name`, or `<DriveLabel>_<FolderPath>` when `name` is omitted
+- Is removed when its drive is unplugged and added back when the drive is plugged in again
+
+If a drive or folder mount has the same name as network storage you created yourself (for
+example a NAS share), Mount It leaves your entry alone and logs an error instead. Rename the
+drive label or set a different `name` to resolve it.
 
 ## Automations
 

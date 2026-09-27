@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.1
+
+- Never replace or remove your own network storage entries: if a drive has the same name as
+  an existing entry (for example a NAS), Mount It now skips it instead of overwriting it
+- Folder mounts are removed when their drive is unplugged and come back when it is plugged in again
+- Log a warning when a hot-plugged drive could not be added to network storage
+- Fix the Specific Label option description, which still said it only applied at startup
+
 ## 1.3.0
 
 - Add Home Assistant events for automations: `mountit_ready`, `mountit_drive_mounted`,

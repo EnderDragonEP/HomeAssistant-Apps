@@ -9,10 +9,9 @@ configuration:
     description: >-
       Automatically mount drives when they are plugged in (default: true)
   specific_label:
-    name: Specific Label (Startup Only)
+    name: Specific Label
     description: >-
-      If set, only mount this specific drive label at startup.
-      Hot-plug will still mount all drives.
+      If set, only the drive with this label is mounted, both at startup and when plugged in.
       Leave empty to mount all labeled drives (default: empty)
   mount_location:
     name: Mount Location
@@ -35,7 +34,7 @@ configuration:
       Map specific folders within mounted drives to different HA storage locations. Drives must be mounted first.
     fields:
       name:
-        name: Name (optionel)
+        name: Name (optional)
         description: >-
           The name shown in Network Storage. Use only letters, numbers, and underscores.
           Leave empty to use the default drive-and-folder name.

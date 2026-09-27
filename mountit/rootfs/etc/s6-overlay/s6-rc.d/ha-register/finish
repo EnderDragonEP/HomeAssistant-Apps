@@ -9,9 +9,25 @@
 # systemd mount unit only clears on reboot.
 # ==============================================================================
 
+# Only entries pointing at this addon's Samba server are Mount It's; never
+# remove a user's own network storage that happens to share a drive's name.
+# If the list cannot be read, fall back to removing by name so our shares are
+# not left mounted on the host.
+owned=$(curl -sS -m 10 \
+    -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+    "http://supervisor/mounts" 2>/dev/null \
+    | jq -r --arg ip "$(cat /tmp/mountit_ip 2>/dev/null)" \
+        'if .result == "ok" then [.data.mounts[]? | select(.server==$ip) | .name] else null end | @json' 2>/dev/null)
+[[ -n "$owned" ]] || owned=null
+
 deregister() {
     local name="$1" response
     [[ -z "$name" ]] && return
+
+    if ! jq -e --arg n "$name" '. == null or any(.[]; . == $n)' <<< "$owned" > /dev/null; then
+        bashio::log.info "  $name — not created by Mount It, leaving it alone"
+        return
+    fi
 
     response=$(curl -sS -m 15 -X DELETE \
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
