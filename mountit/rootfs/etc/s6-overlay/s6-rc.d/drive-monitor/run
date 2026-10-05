@@ -33,7 +33,10 @@ mount_and_register() {
     local devname="$1"
     local fstype label mdisk options="nosuid,relatime" type="auto" cmd="mount"
 
-    label=$(lsblk "$devname" -no LABEL 2>/dev/null | tr -d '[:space:]')
+    # Keep spaces inside the label so the name matches the one used at startup
+    # ("My Drive" → My_Drive); a label of only spaces counts as unlabeled
+    label=$(lsblk -dno LABEL "$devname" 2>/dev/null)
+    [[ -z "${label//[[:space:]]/}" ]] && label=""
     fstype=$(lsblk "$devname" -no FSTYPE 2>/dev/null | tr -d '[:space:]')
 
     [[ -z "$fstype" ]] && return

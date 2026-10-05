@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2
+
+- Fix drives with spaces in their label getting a different name when plugged in than at
+  startup (e.g. `ExternelTestDrive` instead of `External_Test_Drive`). Plugged-in
+  drives now always use the startup name, and Specific Label now matches them
+
 ## 1.3.1
 
 - Never replace or remove your own network storage entries: if a drive has the same name as
