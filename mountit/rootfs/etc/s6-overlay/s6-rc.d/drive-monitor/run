@@ -3,6 +3,21 @@
 # ==============================================================================
 # Monitor for hot-plug drive events and mount/unmount automatically
 # ==============================================================================
+# shellcheck source=/dev/null
+source /usr/lib/mountit/events.sh
+# shellcheck source=/dev/null
+source /usr/lib/mountit/mounts.sh
+
+# Deliver startup events once Home Assistant Core is reachable, then announce
+# what is mounted so automations can sync up after an addon or host restart.
+(
+    mountit::event.flush
+    mountit::event.send ready "$(jq -nc \
+        --slurpfile d /tmp/mountit_mounts.json \
+        --slurpfile f /tmp/mountit_folder_mounts.json \
+        '{"drives":($d[0] // {} | keys),"folder_mounts":($f[0] // {} | keys)}')" \
+        || bashio::log.warning "Could not deliver event mountit_ready to Home Assistant"
+) &
 
 if ! bashio::config.true 'automount_on_plugin'; then
     bashio::log.info "Hot-plug disabled (automount_on_plugin=false)"
@@ -11,17 +26,17 @@ fi
 
 bashio::log.blue "Hot-plug monitor active"
 
-ipaddress=$(bashio::addon.ip_address)
 usage=$(bashio::config 'mount_location')
-username="_mountit_"
-password=$(cat /tmp/mountit_password 2>/dev/null || echo "")
 specific_label=$(bashio::config 'specific_label' 2>/dev/null || echo "")
 
 mount_and_register() {
     local devname="$1"
     local fstype label mdisk options="nosuid,relatime" type="auto" cmd="mount"
 
-    label=$(lsblk "$devname" -no LABEL 2>/dev/null | tr -d '[:space:]')
+    # Keep spaces inside the label so the name matches the one used at startup
+    # ("My Drive" → My_Drive); a label of only spaces counts as unlabeled
+    label=$(lsblk -dno LABEL "$devname" 2>/dev/null)
+    [[ -z "${label//[[:space:]]/}" ]] && label=""
     fstype=$(lsblk "$devname" -no FSTYPE 2>/dev/null | tr -d '[:space:]')
 
     [[ -z "$fstype" ]] && return
@@ -72,6 +87,8 @@ mount_and_register() {
         if fix_out=$(ntfsfix -d "$devname" 2>&1); then
             bashio::log.info "Hot-plug: $mdisk ntfsfix: ${fix_out//$'\n'/; }"
             bashio::log.warning "Hot-plug: $mdisk — NTFS dirty flag cleared without a full repair; if the drive was not safely ejected, verify data with chkdsk on Windows"
+            mountit::event ntfs_repaired "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+                '{"name":$n,"device":$dev}')"
             $cmd "${m_args[@]}" "/mnt/$mdisk" && mounted=true
         else
             bashio::log.warning "Hot-plug: $mdisk ntfsfix failed: ${fix_out//$'\n'/; }"
@@ -81,6 +98,8 @@ mount_and_register() {
     if ! $mounted; then
         bashio::log.error "Hot-plug: failed to mount $mdisk"
         rmdir "/mnt/$mdisk" 2>/dev/null || true
+        mountit::event mount_failed "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+            --arg fs "$fstype" '{"name":$n,"device":$dev,"fstype":$fs,"source":"hotplug"}')"
         return
     fi
 
@@ -90,32 +109,34 @@ mount_and_register() {
        /tmp/mountit_mounts.json > /tmp/mountit_mounts.json.tmp \
     && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
 
-    {
-        printf '[%s]\n' "$mdisk"
-        printf '   path = /mnt/%s\n' "$mdisk"
-        printf '   valid users = _mountit_\n'
-        printf '   read only = No\n'
-        printf '   guest ok = No\n'
-        printf '   force user = root\n'
-        printf '   create mask = 0777\n'
-        printf '   directory mask = 0777\n\n'
-    } >> /etc/samba/smb.conf
+    mountit::samba.add_share "$mdisk" "/mnt/$mdisk"
     smbcontrol smbd reload-config 2>/dev/null || true
 
-    local cmd_json
-    cmd_json=$(jq -nrc \
-        --arg name "$mdisk" --arg share "$mdisk" \
-        --arg ip "${ipaddress/\/*/}" --arg user "$username" \
-        --arg pwd "$password" --arg usage "$usage" \
-        '{"name":$name,"type":"cifs","server":$ip,"share":$share,"username":$user,"password":$pwd,"usage":$usage}')
+    local registered=false
+    if mountit::mount.register "$mdisk" "$mdisk" "$usage"; then
+        registered=true
+        bashio::log.green "Hot-plug: $mdisk mounted and registered"
+    else
+        bashio::log.warning "Hot-plug: $mdisk mounted but not added to HA network storage"
+    fi
 
-    for rt in 1 2 3; do
-        bashio::api.supervisor POST /mounts "$cmd_json" && break
-        bashio::log.warning "Hot-plug: register retry $rt/3 for $mdisk"
-        sleep 3
-    done
+    # Bring back the folder mounts configured for this drive
+    local name
+    mountit::folders.setup "$mdisk"
+    if [[ ${#MOUNTIT_NEW_FOLDERS[@]} -gt 0 ]]; then
+        smbcontrol smbd reload-config 2>/dev/null || true
+        for name in "${MOUNTIT_NEW_FOLDERS[@]}"; do
+            mountit::mount.register "$name" \
+                "$(jq -r --arg n "$name" '.[$n].share' /tmp/mountit_folder_mounts.json)" \
+                "$(jq -r --arg n "$name" '.[$n].location' /tmp/mountit_folder_mounts.json)" \
+                && bashio::log.green "Hot-plug: folder mount $name registered"
+        done
+    fi
 
-    bashio::log.green "Hot-plug: $mdisk mounted and registered"
+    mountit::event drive_mounted "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+        --arg fs "${fstype:-unknown}" --arg mp "/mnt/$mdisk" --arg loc "$usage" \
+        --argjson reg "$registered" \
+        '{"name":$n,"device":$dev,"fstype":$fs,"mount_point":$mp,"location":$loc,"registered":$reg,"source":"hotplug"}')"
 }
 
 unmount_and_deregister() {
@@ -130,21 +151,14 @@ unmount_and_deregister() {
 
     bashio::log.info "Hot-plug: $devname removed ($mdisk)"
 
-    bashio::api.supervisor DELETE "/mounts/${mdisk}" 2>/dev/null \
-        || bashio::log.warning "Hot-plug: could not remove HA mount $mdisk"
+    # Folder mounts live on this drive, so they go first
+    mountit::folders.teardown "$mdisk"
+    mountit::mount.deregister "$mdisk"
 
     umount -l "/mnt/$mdisk" 2>/dev/null || true
     rmdir "/mnt/$mdisk" 2>/dev/null || true
 
-    python3 - "$mdisk" << 'PYEOF'
-import sys, re
-label = sys.argv[1]
-with open('/etc/samba/smb.conf', 'r') as f:
-    content = f.read()
-content = re.sub(rf'\[{re.escape(label)}\][^\[]*', '', content)
-with open('/etc/samba/smb.conf', 'w') as f:
-    f.write(content)
-PYEOF
+    mountit::samba.remove_share "$mdisk"
     smbcontrol smbd reload-config 2>/dev/null || true
 
     jq --arg k "$mdisk" 'del(.[$k])' \
@@ -152,6 +166,8 @@ PYEOF
     && mv /tmp/mountit_mounts.json.tmp /tmp/mountit_mounts.json
 
     bashio::log.green "Hot-plug: $mdisk cleanly removed"
+    mountit::event drive_removed "$(jq -nc --arg n "$mdisk" --arg dev "$devname" \
+        '{"name":$n,"device":$dev}')"
 }
 
 # ---- Event loop ----
