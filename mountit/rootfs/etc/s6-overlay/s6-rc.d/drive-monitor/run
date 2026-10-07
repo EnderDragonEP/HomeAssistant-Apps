@@ -34,10 +34,12 @@ mount_and_register() {
     local fstype label mdisk options="nosuid,relatime" type="auto" cmd="mount"
 
     # Keep spaces inside the label so the name matches the one used at startup
-    # ("My Drive" → My_Drive); a label of only spaces counts as unlabeled
-    label=$(lsblk -dno LABEL "$devname" 2>/dev/null)
+    # ("My Drive" → My_Drive); a label of only spaces counts as unlabeled.
+    # The partition may already be gone again; lsblk then fails, which under
+    # errexit would stop the whole monitor, so treat it as nothing to mount.
+    label=$(lsblk -dno LABEL "$devname" 2>/dev/null || true)
     [[ -z "${label//[[:space:]]/}" ]] && label=""
-    fstype=$(lsblk "$devname" -no FSTYPE 2>/dev/null | tr -d '[:space:]')
+    fstype=$(lsblk "$devname" -no FSTYPE 2>/dev/null | tr -d '[:space:]' || true)
 
     [[ -z "$fstype" ]] && return
     [[ "$label" == hassos* ]] && return

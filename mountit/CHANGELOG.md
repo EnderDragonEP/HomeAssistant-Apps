@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.5
+
+- Fix the add-on failing to start on a fresh install or when updating older versions
+  (`unable to start service init-mount: command exited 1`). 1.3.4 stopped silently when
+  no Samba password had been saved yet
+- Keep the hot-plug monitor running when a drive is unplugged again right after being plugged in
+
 ## 1.3.4
 
 - Replace the saved Samba password if the file is empty or damaged, instead of failing to
