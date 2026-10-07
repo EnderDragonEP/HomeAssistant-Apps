@@ -24,6 +24,10 @@ The quickest way is to click the badge above. Otherwise, add the repository manu
    https://github.com/EnderDragonEP/HomeAssistant-Apps
    ```
 
+## Disclaimer
+
+This application is built specifically for Home Assistant OS and is not guaranteed to function properly on other installation types. Please do your research before installation. If you have any questions, please submit a issue report with logs attached.
+
 ## Support
 
 Found a bug or have a feature request? Please open an
