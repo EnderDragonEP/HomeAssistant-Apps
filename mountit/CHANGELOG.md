@@ -1,12 +1,22 @@
 # Changelog
 
+## 1.3.4
+
+- Replace the saved Samba password if the file is empty or damaged, instead of failing to
+  register drives on every start until it is deleted by hand
+- Log a warning if the Samba password cannot be saved, since it will then change on every
+  restart
+
 ## 1.3.3
 
-- Fix the host kernel log being flooded with `CIFS: VFS: \\172.30.32.1 Send error in
-  SessSetup = -13` after the add-on restarts. The internal Samba password was
-  regenerated on every start, so the network storage entry Home Assistant had already
-  recorded could no longer authenticate and retried forever. The password is now kept
-  in the add-on's persistent data
+- Keep the internal Samba password across restarts and updates. It used to change on
+  every start, so a share connection that outlived the restart (for example one still
+  open in Home Assistant) could no longer log in and retried forever, flooding the host
+  kernel log with `CIFS: VFS: \\172.30.32.1 Send error in SessSetup = -13`
+- If you already see that flood, reboot the host once after updating. Connections left
+  over from earlier versions still carry the old password and only a reboot clears
+  them. Reinstalling the add-on also creates a new password, so it can bring the flood
+  back while a share is still in use
 
 ## 1.3.2
 

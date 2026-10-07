@@ -27,11 +27,11 @@ mkdir -p /mnt
 # smbd comes back. A fresh password each start makes every reconnect fail with
 # EACCES, and the CIFS client retries forever, flooding the host kernel log.
 password_file=/data/samba_password
-if [[ -s "$password_file" ]]; then
-    PASSWORD=$(cat "$password_file")
-else
+PASSWORD=$(cat "$password_file" 2>/dev/null)
+if [[ ! "$PASSWORD" =~ ^[0-9a-f]{20}$ ]]; then
     PASSWORD=$(sed 's/[-]//g' /proc/sys/kernel/random/uuid | head -c 20)
-    (umask 077; echo "$PASSWORD" > "$password_file")
+    (umask 077; echo "$PASSWORD" > "$password_file") \
+        || bashio::log.warning "Could not persist Samba password — it will change on every restart"
 fi
 (umask 077; echo "$PASSWORD" > /tmp/mountit_password)
 (echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -a -s _mountit_ 2>/dev/null \
