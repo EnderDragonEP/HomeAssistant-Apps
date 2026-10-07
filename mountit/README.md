@@ -58,3 +58,7 @@ See [DOCS.md](DOCS.md) for full configuration reference.
 [aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
 [amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
 [armv7-shield]: https://img.shields.io/badge/armv7-yes-green.svg
+
+## Disclaimer
+
+This application is built specifically for Home Assistant OS and is not guaranteed to function properly on other installation types. Please do your research before installation. If you have any questions, please submit a issue report with logs attached.
