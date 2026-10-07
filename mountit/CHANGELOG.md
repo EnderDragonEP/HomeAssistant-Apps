@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.3
+
+- Fix the host kernel log being flooded with `CIFS: VFS: \\172.30.32.1 Send error in
+  SessSetup = -13` after the add-on restarts. The internal Samba password was
+  regenerated on every start, so the network storage entry Home Assistant had already
+  recorded could no longer authenticate and retried forever. The password is now kept
+  in the add-on's persistent data
+
 ## 1.3.2
 
 - Fix drives with spaces in their label getting a different name when plugged in than at

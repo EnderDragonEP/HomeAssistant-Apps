@@ -22,7 +22,17 @@ rm -f "$MOUNTIT_EVENT_QUEUE"
 mkdir -p /mnt
 
 # ---- Samba service account ----
-PASSWORD=$(sed 's/[-]//g' /proc/sys/kernel/random/uuid | head -c 20)
+# The password has to survive restarts. Supervisor bakes it into the host's CIFS
+# mount, and the host kernel reuses that stored copy to re-authenticate whenever
+# smbd comes back. A fresh password each start makes every reconnect fail with
+# EACCES, and the CIFS client retries forever, flooding the host kernel log.
+password_file=/data/samba_password
+if [[ -s "$password_file" ]]; then
+    PASSWORD=$(cat "$password_file")
+else
+    PASSWORD=$(sed 's/[-]//g' /proc/sys/kernel/random/uuid | head -c 20)
+    (umask 077; echo "$PASSWORD" > "$password_file")
+fi
 (umask 077; echo "$PASSWORD" > /tmp/mountit_password)
 (echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -a -s _mountit_ 2>/dev/null \
     || (echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -s _mountit_ 2>/dev/null \
