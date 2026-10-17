@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.7
+
+- Lock the Python packages Mount It installs to reviewed versions and their file hashes.
+  The add-on is built on your device during installation, and until now its indirect
+  dependencies were whatever was newest at that moment; now a package that does not match
+  the lock is refused instead of installed
+
 ## 1.3.6
 
 - Fix drives with characters such as `(`, `)`, `'` or `&` in their label (e.g. `Backup (main)`)

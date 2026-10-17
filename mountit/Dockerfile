@@ -85,7 +85,10 @@ COPY rootfs /
 RUN find /etc/s6-overlay/s6-rc.d -name run -o -name finish -o -name up -o -name down \
     | xargs chmod a+x 2>/dev/null || true
 
-# Install Python dependencies (diskinfo library)
+# Install Python dependencies (diskinfo library) exactly as pinned in poetry.lock;
+# a package whose file hash is not in the lock is refused. After editing
+# pyproject.toml, regenerate the lock with Poetry 1.8 (Alpine's version):
+#   cd mountit/rootfs/usr/local/bin && poetry lock --no-update
 RUN cd /usr/local/bin/ && poetry install --no-interaction
 
 # smbd binds only the addon IP (written to /tmp/mountit_ip by init-mount);
