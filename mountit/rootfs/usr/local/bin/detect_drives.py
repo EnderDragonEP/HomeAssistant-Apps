@@ -10,7 +10,7 @@ for d in disks:
     if d.get_partition_table_type() == "":
         continue
     for item in d.get_partition_list():
-        label = item.get_fs_label()
+        label = item.get_filesystem().get_fs_label()
         if not label:
             continue
         if label.startswith("hassos"):

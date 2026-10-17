@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.6
+
+- Fix drives with characters such as `(`, `)`, `'` or `&` in their label (e.g. `Backup (main)`)
+  not being mounted at startup with "device not found, skipping" (#19). They were already
+  mounted when plugged in. Thanks to @petersulyok, the author of diskinfo, for reporting it
+- Update diskinfo to 4.2.1
+
 ## 1.3.5
 
 - Fix the add-on failing to start on a fresh install or when updating older versions
