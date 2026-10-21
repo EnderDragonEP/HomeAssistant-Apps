@@ -91,10 +91,15 @@ Mount It fires Home Assistant events you can use as automation triggers:
 | `mountit_mount_failed` | A drive was found but could not be mounted | `name`, `device`, `fstype`, `source` |
 | `mountit_ntfs_repaired` | An NTFS drive's dirty flag was cleared so it could mount | `name`, `device` |
 | `mountit_ready` | Startup finished and Home Assistant is reachable | `drives`, `folder_mounts` |
+| `mountit_stopping` | Mount It is stopping (stop, restart, update or host shutdown); drives are still mounted | `drives`, `folder_mounts` |
 
 `name` is the drive's network storage name, `registered` tells whether it was added to HA
 network storage, and `source` is `startup` or `hotplug`. Startup events are held until Home
 Assistant is running, so they still arrive after a host reboot.
+
+`mountit_stopping` is sent just before the drives are removed from network storage, but Mount
+It does not wait for your automation: the drives disappear a few seconds later. It is also not
+delivered if Home Assistant itself is already shutting down.
 
 **Example:** Get notified when the `Backup` drive is unplugged:
 
@@ -108,6 +113,18 @@ actions:
   - action: notify.notify
     data:
       message: "Backup drive was removed ({{ trigger.event.data.device }})"
+```
+
+**Example:** Stop Frigate when Mount It stops, so it does not keep recording to a missing drive:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: mountit_stopping
+actions:
+  - action: hassio.app_stop
+    data:
+      app: ccab4aaf_frigate
 ```
 
 To check whether a drive is mounted right now (for conditions or dashboards), enable the

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0
+
+- Add the `mountit_stopping` event, sent when Mount It stops (stop, restart, update or host
+  shutdown) while the drives are still mounted. Use it to stop apps such as Frigate before
+  their storage goes away. See the Automations section of the documentation
+
 ## 1.3.7
 
 - Lock the Python packages Mount It installs to reviewed versions and their file hashes.

@@ -8,6 +8,15 @@
 # goes away first the host kernel CIFS client wedges on EHOSTDOWN and the
 # systemd mount unit only clears on reboot.
 # ==============================================================================
+# shellcheck source=/dev/null
+source /usr/lib/mountit/events.sh
+
+# Tell automations first, while every drive is still available. Best effort:
+# Home Assistant may already be stopping, and shutdown must not wait on it.
+drives=$(jq -c 'keys' /tmp/mountit_mounts.json 2>/dev/null || echo '[]')
+folders=$(jq -c 'keys' /tmp/mountit_folder_mounts.json 2>/dev/null || echo '[]')
+mountit::event stopping "$(jq -nc --argjson d "$drives" --argjson f "$folders" \
+    '{"drives":$d,"folder_mounts":$f}')"
 
 # Only entries pointing at this addon's Samba server are Mount It's; never
 # remove a user's own network storage that happens to share a drive's name.
