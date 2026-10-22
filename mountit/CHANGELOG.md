@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.1
+
+- When stopping, Mount It now waits for files on the drives to be closed before removing
+  them, so an automation that stops Frigate on `mountit_stopping` has time to finish. It
+  continues as soon as nothing is open, or after the new `shutdown_wait_seconds` option
+  (default 30, up to 180)
+- Allow Mount It more time to stop (up to 300 seconds) to make room for the wait
+
 ## 1.4.0
 
 - Add the `mountit_stopping` event, sent when Mount It stops (stop, restart, update or host

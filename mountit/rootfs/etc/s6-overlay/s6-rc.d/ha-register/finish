@@ -18,6 +18,36 @@ folders=$(jq -c 'keys' /tmp/mountit_folder_mounts.json 2>/dev/null || echo '[]')
 mountit::event stopping "$(jq -nc --argjson d "$drives" --argjson f "$folders" \
     '{"drives":$d,"folder_mounts":$f}')"
 
+# Give apps time to close their files before the drives go away. smbd is
+# still running here, so the shares keep working while we wait. Anything 
+# unreadable counts as "nothing open", so this can never hold up shutdown
+# beyond the configured maximum.
+open_files() {
+    local n
+    n=$(smbstatus -L --json 2>/dev/null | jq '.open_files | length' 2>/dev/null || true)
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 0
+}
+wait_max=$(bashio::config 'shutdown_wait_seconds' 2>/dev/null || true)
+[[ "$wait_max" =~ ^[0-9]+$ ]] || wait_max=30
+open=$(open_files)
+if [[ "$wait_max" -gt 0 && "$open" -gt 0 ]]; then
+    bashio::log.info "Waiting up to ${wait_max}s for ${open} open file(s) on the drives to be closed:"
+    smbstatus -L --json 2>/dev/null \
+        | jq -r '.open_files | to_entries[] | "  " + ((.value.service_path // "") + "/" + (.value.filename // .key))' 2>/dev/null \
+        | head -10 | while IFS= read -r f; do bashio::log.info "$f"; done || true
+    waited=0
+    while [[ "$waited" -lt "$wait_max" && "$open" -gt 0 ]]; do
+        sleep 1
+        waited=$((waited + 1))
+        open=$(open_files)
+    done
+    if [[ "$open" -gt 0 ]]; then
+        bashio::log.warning "${open} file(s) still open after ${waited}s, removing the drives anyway"
+    else
+        bashio::log.info "All files closed after ${waited}s"
+    fi
+fi
+
 # Only entries pointing at this addon's Samba server are Mount It's; never
 # remove a user's own network storage that happens to share a drive's name.
 # If the list cannot be read, fall back to removing by name so our shares are
