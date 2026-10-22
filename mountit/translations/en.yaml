@@ -21,6 +21,12 @@ configuration:
     name: HDD Idle Power-Down
     description: >-
       Spin down external hard drives after N seconds of inactivity. Set to 0 to disable (default: 0)
+  shutdown_wait_seconds:
+    name: Shutdown Wait
+    description: >-
+      When Mount It stops, wait up to N seconds for files on the drives to be closed (for
+      example by an automation that stops Frigate on the mountit_stopping event) before
+      removing the drives. Continues as soon as nothing is open. Set to 0 to not wait (default: 30)
   file_activity_detail:
     name: File Activity Detail
     description: >-

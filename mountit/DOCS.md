@@ -22,6 +22,7 @@ it (if `automount_on_plugin` is enabled).
 | `specific_label` | `""` | If set, only this drive label is mounted (applies to startup and hot-plug) |
 | `mount_location` | `media` | Where to expose drives: `media`, `share`, or `backup` |
 | `hdd_idle_seconds` | `0` | Spin down drives after N seconds idle (0 = disabled). The HAOS system disk is always excluded. |
+| `shutdown_wait_seconds` | `30` | When stopping, wait up to N seconds (max 180) for open files on the drives to be closed before removing them. Continues as soon as nothing is open (0 = don't wait) |
 | `file_activity_detail` | `off` | File activity logging level: `off`, `basic`, or `detailed` |
 
 ## File Activity Log
@@ -97,8 +98,10 @@ Mount It fires Home Assistant events you can use as automation triggers:
 network storage, and `source` is `startup` or `hotplug`. Startup events are held until Home
 Assistant is running, so they still arrive after a host reboot.
 
-`mountit_stopping` is sent just before the drives are removed from network storage, but Mount
-It does not wait for your automation: the drives disappear a few seconds later. It is also not
+`mountit_stopping` is sent before the drives are removed from network storage. Mount It then
+waits up to `shutdown_wait_seconds` (default 30) while any file on the drives is still open,
+so an automation can stop an app such as Frigate cleanly, and continues as soon as nothing is
+open. If your app needs longer to stop, raise the option (up to 180). The event is not
 delivered if Home Assistant itself is already shutting down.
 
 **Example:** Get notified when the `Backup` drive is unplugged:
