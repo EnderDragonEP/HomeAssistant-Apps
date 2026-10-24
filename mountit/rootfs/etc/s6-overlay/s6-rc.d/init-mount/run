@@ -144,6 +144,7 @@ if bashio::config.true 'mount_unlabeled'; then
         label=$(lsblk "$devname" -no LABEL 2>/dev/null | tr -d '[:space:]')
         fstype=$(lsblk "$devname" -no FSTYPE 2>/dev/null | tr -d '[:space:]')
         [[ -z "$fstype" || "$label" == hassos* ]] && continue
+        mountit::is_haos_partition "$devname" && continue
         if [[ -z "$label" ]]; then
             shortname="unlabeled_$(basename "$devname")"
             echo "$devname" > "/tmp/devmap_${shortname}"

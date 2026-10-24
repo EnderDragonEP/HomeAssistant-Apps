@@ -43,6 +43,7 @@ mount_and_register() {
 
     [[ -z "$fstype" ]] && return
     [[ "$label" == hassos* ]] && return
+    mountit::is_haos_partition "$devname" && return
 
     if [[ -z "$label" ]]; then
         if ! bashio::config.true 'mount_unlabeled'; then

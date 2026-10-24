@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.2
+
+- Fix a part of Home Assistant OS itself (its system partition, e.g. `unlabeled_sda3`) being
+  mounted and shown in network storage when Mount unlabeled drives is turned on (#23).
+  Partitions belonging to Home Assistant OS are now always skipped
+
 ## 1.4.1
 
 - When stopping, Mount It now waits for files on the drives to be closed before removing

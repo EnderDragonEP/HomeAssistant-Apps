@@ -7,6 +7,15 @@
 # happens to share a drive's name) are never replaced or removed.
 # ==============================================================================
 
+# True if <device> is a Home Assistant OS partition. HAOS names its GPT
+# partitions hassos-*, but its system images (hassos-system0/1) carry no
+# filesystem label, so checking the label alone lets them through.
+mountit::is_haos_partition() {
+    local partlabel
+    partlabel=$(lsblk -dno PARTLABEL "$1" 2>/dev/null || true)
+    [[ "$partlabel" == hassos* ]]
+}
+
 # Print who owns network storage entry <name>: "none", "mountit" or "other"
 mountit::mount.owner() {
     local name="$1" entry
