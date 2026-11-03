@@ -55,6 +55,8 @@ ext2/3/4, NTFS, Btrfs, XFS, exFAT/FAT32, APFS (read-only)
 
 See [DOCS.md](DOCS.md) for full configuration reference.
 
+The open-source components Mount It is built on, and the license of the Home Assistant logo in its icon, are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 [aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
 [amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
 [armv7-shield]: https://img.shields.io/badge/armv7-yes-green.svg
