@@ -11,7 +11,7 @@ Icon & banner is made in [draw.io](https://github.com/jgraph/drawio)
 ![Supports armv7 Architecture][armv7-shield]
 
 > [!NOTE]
-> **Home Assistant can now mount local drives itself.** Since Home Assistant 2026.11.0, you can add a USB or internal drive under **Settings → System → Storage → Add storage → Local disk**, without any app ([documentation](https://www.home-assistant.io/common-tasks/os/#local-disk-storage)). If you have one drive that stays connected and is used for one thing, the built-in feature may be all you need. See [Reasons to keep using Mount It](#reasons-to-keep-using-mount-it) for what Mount It still adds.
+> **Home Assistant can now mount local drives itself.** <p> Since Home Assistant 2026.11.0, you can add a USB or internal drive under **Settings → System → Storage → Add storage → Local disk**, without any app ([documentation](https://www.home-assistant.io/common-tasks/os/#local-disk-storage)). If you have one drive that stays connected and is used for one thing, the built-in feature may be all you need. See [Reasons to keep using Mount It](#reasons-to-keep-using-mount-it) for what Mount It still adds.
 
 ## Features
 
