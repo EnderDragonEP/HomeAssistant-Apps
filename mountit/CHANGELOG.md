@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.3
+
+- Fix drives disappearing from network storage some time after a reboot while Mount It kept
+  running (#27). At boot, Home Assistant reports a "mount failed" repair for each drive before
+  Mount It has started; choosing **Remove** on it later deleted the working drive. Mount It now
+  closes these repairs once the drive is registered
+- Mount It now checks its network storage every minute and registers a drive again if its entry
+  was removed, sending the new `mountit_mount_lost` event
+- The shutdown log now says a drive was "already removed from network storage" instead of
+  wrongly reporting it as "not created by Mount It"
+
 ## 1.4.2
 
 - Fix a part of Home Assistant OS itself (its system partition, e.g. `unlabeled_sda3`) being

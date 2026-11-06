@@ -93,6 +93,7 @@ Mount It fires Home Assistant events you can use as automation triggers:
 | `mountit_ntfs_repaired` | An NTFS drive's dirty flag was cleared so it could mount | `name`, `device` |
 | `mountit_ready` | Startup finished and Home Assistant is reachable | `drives`, `folder_mounts` |
 | `mountit_stopping` | Mount It is stopping (stop, restart, update or host shutdown); drives are still mounted | `drives`, `folder_mounts` |
+| `mountit_mount_lost` | A network storage entry was removed outside Mount It while its drive was still mounted | `name`, `reregistered` |
 
 `name` is the drive's network storage name, `registered` tells whether it was added to HA
 network storage, and `source` is `startup` or `hotplug`. Startup events are held until Home
@@ -103,6 +104,12 @@ waits up to `shutdown_wait_seconds` (default 30) while any file on the drives is
 so an automation can stop an app such as Frigate cleanly, and continues as soon as nothing is
 open. If your app needs longer to stop, raise the option (up to 180). The event is not
 delivered if Home Assistant itself is already shutting down.
+
+Mount It checks its network storage entries every minute. If one has been removed while the
+drive is still mounted (for example with **Remove** in a repair), it registers the entry again
+and sends `mountit_mount_lost`; `reregistered` tells whether that worked. After a reboot, Mount
+It also closes the "mount failed" repairs the Supervisor opens before Mount It has started, so
+they can't remove a working drive later.
 
 **Example:** Get notified when the `Backup` drive is unplugged:
 

@@ -19,6 +19,15 @@ source /usr/lib/mountit/mounts.sh
         || bashio::log.warning "Could not deliver event mountit_ready to Home Assistant"
 ) &
 
+# Keep Mount It's network storage in place: every minute, register again any
+# entry that disappeared from the Supervisor while its drive is still mounted.
+(
+    while sleep "${MOUNTIT_CHECK_INTERVAL:-60}"; do
+        [[ -f "$MOUNTIT_STOPPING" ]] && exit 0
+        mountit::with_lock mountit::mount.check_lost || true
+    done
+) &
+
 if ! bashio::config.true 'automount_on_plugin'; then
     bashio::log.info "Hot-plug disabled (automount_on_plugin=false)"
     exec sleep infinity
@@ -186,8 +195,8 @@ while IFS='=' read -r key value; do
         "")
             if [[ "$devtype" == "partition" ]]; then
                 case "$action" in
-                    add)    sleep 2; mount_and_register "$devname" ;;
-                    remove) unmount_and_deregister "$devname" ;;
+                    add)    sleep 2; mountit::with_lock mount_and_register "$devname" || true ;;
+                    remove) mountit::with_lock unmount_and_deregister "$devname" || true ;;
                 esac
             fi
             action=""; devname=""; devtype=""

@@ -16,6 +16,43 @@ mountit::is_haos_partition() {
     [[ "$partlabel" == hassos* ]]
 }
 
+MOUNTIT_REGISTERED=/tmp/mountit_registered
+MOUNTIT_LOCK=/tmp/mountit.lock
+MOUNTIT_STOPPING=/tmp/mountit_stopping
+
+# Run "$@" while holding Mount It's lock, so hot-plug, the lost-entry check and
+# shutdown never change network storage at the same time
+mountit::with_lock() {
+    ( flock 9; "$@" ) 9> "$MOUNTIT_LOCK"
+}
+
+# Names of the network storage entries Mount It registered, one per line
+mountit::registered.add() {
+    grep -qxF "$1" "$MOUNTIT_REGISTERED" 2>/dev/null || echo "$1" >> "$MOUNTIT_REGISTERED"
+}
+
+mountit::registered.remove() {
+    [[ -f "$MOUNTIT_REGISTERED" ]] || return 0
+    grep -vxF "$1" "$MOUNTIT_REGISTERED" > "${MOUNTIT_REGISTERED}.tmp" || true
+    mv "${MOUNTIT_REGISTERED}.tmp" "$MOUNTIT_REGISTERED"
+}
+
+# Close leftover "mount failed" repairs for <name>. At boot the Supervisor
+# restores saved entries before Mount It's Samba server is up; they fail and it
+# opens a repair offering Reload or Remove. Registering the entry again does not
+# close that repair, and choosing Remove later deletes the working entry (#27).
+mountit::mount.dismiss_failed_issue() {
+    local name="$1" uuid
+    while IFS= read -r uuid; do
+        [[ -z "$uuid" ]] && continue
+        bashio::api.supervisor DELETE "/resolution/issue/${uuid}" > /dev/null 2>&1 \
+            && bashio::log.info "  $name — closed the leftover \"mount failed\" repair from boot"
+    done < <(bashio::api.supervisor GET /resolution/info 2>/dev/null \
+        | jq -r --arg n "$name" \
+            '.issues[]? | select(.type == "mount_failed" and .reference == $n) | .uuid' 2>/dev/null \
+        || true)
+}
+
 # Print who owns network storage entry <name>: "none", "mountit" or "other"
 mountit::mount.owner() {
     local name="$1" entry
@@ -52,7 +89,11 @@ mountit::mount.register() {
         '{"name":$name,"type":"cifs","server":$ip,"share":$share,"username":$user,"password":$pwd,"usage":$usage}')
 
     for rt in 1 2 3; do
-        bashio::api.supervisor POST /mounts "$cmd" > /dev/null && return 0
+        if bashio::api.supervisor POST /mounts "$cmd" > /dev/null; then
+            mountit::registered.add "$name"
+            mountit::mount.dismiss_failed_issue "$name"
+            return 0
+        fi
         bashio::log.warning "  $name — attempt $rt/3 failed, retrying..."
         sleep 3
     done
@@ -63,9 +104,47 @@ mountit::mount.register() {
 # Remove network storage entry <name>, but only if Mount It created it
 mountit::mount.deregister() {
     local name="$1"
+    mountit::registered.remove "$name"
     [[ "$(mountit::mount.owner "$name")" == "mountit" ]] || return 0
     bashio::api.supervisor DELETE "/mounts/${name}" > /dev/null 2>&1 \
         || bashio::log.warning "  $name — could not remove network storage entry"
+}
+
+# Register again every entry Mount It registered that has disappeared from the
+# Supervisor while its drive is still mounted here (for example removed through
+# a repair, #27), and send mountit_mount_lost for each. Run under the lock.
+mountit::mount.check_lost() {
+    local current name share usage reregistered names=()
+    [[ -f "$MOUNTIT_STOPPING" ]] && return 0
+    [[ -s "$MOUNTIT_REGISTERED" ]] || return 0
+    # Supervisor busy or restarting: try again next time
+    current=$(bashio::api.supervisor GET /mounts 2>/dev/null) || return 0
+    mapfile -t names < "$MOUNTIT_REGISTERED"
+
+    for name in "${names[@]}"; do
+        [[ -z "$name" ]] && continue
+        jq -e --arg n "$name" '.mounts[]? | select(.name == $n)' <<< "$current" > /dev/null 2>&1 && continue
+
+        if jq -e --arg n "$name" '.[$n]' /tmp/mountit_mounts.json > /dev/null 2>&1; then
+            share="$name"
+            usage=$(bashio::config 'mount_location')
+        elif jq -e --arg n "$name" '.[$n]' /tmp/mountit_folder_mounts.json > /dev/null 2>&1; then
+            share=$(jq -r --arg n "$name" '.[$n].share' /tmp/mountit_folder_mounts.json)
+            usage=$(jq -r --arg n "$name" '.[$n].location' /tmp/mountit_folder_mounts.json)
+        else
+            mountit::registered.remove "$name"
+            continue
+        fi
+
+        bashio::log.warning "$name — network storage entry was removed outside Mount It, registering it again"
+        reregistered=false
+        if mountit::mount.register "$name" "$share" "$usage"; then
+            reregistered=true
+            bashio::log.green "  $name — registered again"
+        fi
+        mountit::event mount_lost "$(jq -nc --arg n "$name" --argjson r "$reregistered" \
+            '{"name":$n,"reregistered":$r}')"
+    done
 }
 
 # Append Samba share [<name>] for <path> to smb.conf (caller reloads smbd)

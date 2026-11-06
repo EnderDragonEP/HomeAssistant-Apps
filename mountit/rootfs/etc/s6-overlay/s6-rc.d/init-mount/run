@@ -18,7 +18,7 @@ source /usr/lib/mountit/events.sh
 source /usr/lib/mountit/mounts.sh
 
 echo "{}" > /tmp/mountit_mounts.json
-rm -f "$MOUNTIT_EVENT_QUEUE"
+rm -f "$MOUNTIT_EVENT_QUEUE" "$MOUNTIT_REGISTERED" "$MOUNTIT_STOPPING"
 mkdir -p /mnt
 
 # ---- Samba service account ----
