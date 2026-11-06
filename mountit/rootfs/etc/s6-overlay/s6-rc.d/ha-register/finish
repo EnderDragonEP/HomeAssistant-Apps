@@ -10,6 +10,14 @@
 # ==============================================================================
 # shellcheck source=/dev/null
 source /usr/lib/mountit/events.sh
+# shellcheck source=/dev/null
+source /usr/lib/mountit/mounts.sh
+
+# Stop the lost-entry check from registering drives again while we remove them,
+# and wait (briefly) for a check that is already running to finish
+touch "$MOUNTIT_STOPPING"
+exec 9> "$MOUNTIT_LOCK"
+flock -w 30 9 || true
 
 # Tell automations first, while every drive is still available. Best effort:
 # Home Assistant may already be stopping, and shutdown must not wait on it.
@@ -52,19 +60,27 @@ fi
 # remove a user's own network storage that happens to share a drive's name.
 # If the list cannot be read, fall back to removing by name so our shares are
 # not left mounted on the host.
-owned=$(curl -sS -m 10 \
+mounts=$(curl -sS -m 10 \
     -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-    "http://supervisor/mounts" 2>/dev/null \
-    | jq -r --arg ip "$(cat /tmp/mountit_ip 2>/dev/null)" \
-        'if .result == "ok" then [.data.mounts[]? | select(.server==$ip) | .name] else null end | @json' 2>/dev/null)
+    "http://supervisor/mounts" 2>/dev/null || true)
+owned=$(jq -r --arg ip "$(cat /tmp/mountit_ip 2>/dev/null)" \
+    'if .result == "ok" then [.data.mounts[]? | select(.server==$ip) | .name] else null end | @json' \
+    <<< "$mounts" 2>/dev/null || true)
+listed=$(jq -r 'if .result == "ok" then [.data.mounts[]?.name] else null end | @json' \
+    <<< "$mounts" 2>/dev/null || true)
 [[ -n "$owned" ]] || owned=null
+[[ -n "$listed" ]] || listed=null
 
 deregister() {
     local name="$1" response
     [[ -z "$name" ]] && return
 
     if ! jq -e --arg n "$name" '. == null or any(.[]; . == $n)' <<< "$owned" > /dev/null; then
-        bashio::log.info "  $name — not created by Mount It, leaving it alone"
+        if jq -e --arg n "$name" '. != null and any(.[]; . == $n)' <<< "$listed" > /dev/null; then
+            bashio::log.info "  $name — not created by Mount It, leaving it alone"
+        else
+            bashio::log.warning "  $name — already removed from network storage"
+        fi
         return
     fi
 
