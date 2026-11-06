@@ -10,6 +10,20 @@ Icon & banner is made in [draw.io](https://github.com/jgraph/drawio)
 ![Supports amd64 Architecture][amd64-shield]
 ![Supports armv7 Architecture][armv7-shield]
 
+> [!NOTE]
+> **Home Assistant can now mount local drives itself.** Since Home Assistant 2026.11.0, you can add a USB or internal drive under **Settings → System → Storage → Add storage → Local disk**, without any app ([documentation](https://www.home-assistant.io/common-tasks/os/#local-disk-storage)). If you have one drive that stays connected and is used for one thing, the built-in feature may be all you need.
+>
+> Reasons to keep using Mount It:
+>
+> - **Fully automatic:** Mount It mounts labelled drives at startup and as soon as they're plugged in. With the built-in feature, you add each disk by hand, and a reconnected disk can take up to 15 minutes to come back unless you reload it from the repair.
+> - **Recovers NTFS drives after an unsafe unplug:** an NTFS drive that is unplugged or loses power while in use is left marked as dirty, and the built-in feature can't mount it again until it has been repaired with chkdsk on Windows. Mount It clears the dirty flag and mounts it again, so apps such as Frigate can carry on (it still recommends checking the drive with chkdsk later).
+> - **More file systems:** XFS and APFS (read-only) are supported, which the built-in feature doesn't list.
+> - **One drive, several uses:** the built-in feature mounts each drive in one place only, for a single use (media, share or backup), so you can't use the same drive for both media and backups. With folder mounts, Mount It can: for example, the whole drive as media and its `ha_backup` folder as backup storage.
+> - **Automation events:** start apps such as Frigate when the drives are ready, stop them before Mount It shuts down, or get notified when a drive is removed or fails to mount.
+> - **Extras:** hard drive spin-down and a file activity log.
+>
+> Use one or the other for a given drive, not both.
+
 ## Features
 
 - Auto-detects labeled drives on startup and hot-plug
